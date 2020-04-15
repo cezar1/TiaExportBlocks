@@ -11,7 +11,9 @@ Will create in C:\Test\MyExportedCode the following structure:
 -- udt\
 -- tag_tables\
 
-The tag tables are exported in xml format.
+Additional comments/clarifications:
++ The tag tables are exported in xml format.
++ The block groups are parsed recursively.
 
 The application has been tested for following platforms:
 Win 10 x64 Version 1909
