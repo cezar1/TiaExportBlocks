@@ -16,20 +16,25 @@ namespace TiaExportBlocks
 {
     class Program
     {
-        static Dictionary<string, string> program_language_to_extension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" } };
+        static Dictionary<string, string> programLanguageToExtension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" } };
+        static Dictionary<string, string> programLanguageToFolderPrefixExtension = new Dictionary<string, string> { { "SCL", @"\scl\" }, { "DB", @"\db\" } };
+        static string exportLocation;
         static void HandleBlock(PlcBlock block,PlcSoftware software)
         {
             PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
-            Console.WriteLine(block.Name + " " + block.GetType()+ " " +block.ProgrammingLanguage);
-            if (program_language_to_extension.ContainsKey(block.ProgrammingLanguage.ToString()))
+            //Console.WriteLine(block.Name + " " + block.GetType()+ " " +block.ProgrammingLanguage);
+            if (programLanguageToExtension.ContainsKey(block.ProgrammingLanguage.ToString()))
             {
                 string extension;
-                program_language_to_extension.TryGetValue(block.ProgrammingLanguage.ToString(),out extension);
-                var fileInfo = new FileInfo(@"C:\Test\" + block.Name + extension);
+                programLanguageToExtension.TryGetValue(block.ProgrammingLanguage.ToString(),out extension);
+                string folder_prefix;
+                programLanguageToFolderPrefixExtension.TryGetValue(block.ProgrammingLanguage.ToString(), out folder_prefix);
+                var fileInfo = new FileInfo(exportLocation + folder_prefix+block.Name + extension);
                 var blocks = new List<PlcBlock>() { block };
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    Console.WriteLine(block.Name + " to " + fileInfo.FullName);
                     externalSourceGroup.GenerateSource(blocks, fileInfo, GenerateOptions.None);
                 }
                 catch (Exception exc)
@@ -43,7 +48,7 @@ namespace TiaExportBlocks
         {
             PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             string extension=".udt";
-            var fileInfo = new FileInfo(@"C:\Test\" + plcType.Name + extension);
+            var fileInfo = new FileInfo(exportLocation + @"\udt\"+plcType.Name + extension);
             var blocks = new List<PlcType>() { plcType };
             try
             {
@@ -71,7 +76,7 @@ namespace TiaExportBlocks
         {
             foreach (PlcTagTable table in tagTables)
             {
-                string filePath = @"C:\Test\"+ table.Name + ".xml";
+                string filePath = exportLocation + @"\tag_tables\"+table.Name + ".xml";
                 var fileInfo = new FileInfo(filePath);
                 Console.WriteLine(table.Name+" to "+ fileInfo.FullName);
                 if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -86,28 +91,52 @@ namespace TiaExportBlocks
                 ExportUserGroupDeep(userGroup);
             }
         }
+        private static void CheckDirectory(string path)
+        {
+            if (!Directory.Exists(path))
+            {
+                Console.WriteLine("Export location "+path+" does not exist");
+                Directory.CreateDirectory(path);
+            }
+        }
         static void Main(string[] args)
         {
-            var watch = new System.Diagnostics.Stopwatch();
-            watch.Start();
-            Console.WriteLine("Enumerating TIA processes..");
-            foreach (TiaPortalProcess tiaPortalProcess in TiaPortal.GetProcesses())
+
+            if (args == null || args.Length == 0 || args.Length>1)
             {
-                Console.WriteLine("Process ID "+tiaPortalProcess.Id);
-                Console.WriteLine("Project PATH " + tiaPortalProcess.ProjectPath);
-                TiaPortal tiaPortal = tiaPortalProcess.Attach();
-                foreach (Project project in tiaPortal.Projects)
+                Console.WriteLine("No arguments provided");
+                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test");
+                Console.ReadLine();
+            }
+            else
+            {
+                exportLocation = args[0];
+                Console.WriteLine("Export location is " + exportLocation);
+                CheckDirectory(exportLocation);
+                CheckDirectory(exportLocation + @"\scl");
+                CheckDirectory(exportLocation + @"\db");
+                CheckDirectory(exportLocation + @"\udt");
+                CheckDirectory(exportLocation + @"\tag_tables");
+                var watch = new System.Diagnostics.Stopwatch();
+                watch.Start();
+                Console.WriteLine("Enumerating TIA processes..");
+                foreach (TiaPortalProcess tiaPortalProcess in TiaPortal.GetProcesses())
                 {
-                    Console.WriteLine("Handling project " + project.Name);
-                    foreach (Siemens.Engineering.HW.Device device in project.Devices)
+                    Console.WriteLine("Process ID " + tiaPortalProcess.Id);
+                    Console.WriteLine("Project PATH " + tiaPortalProcess.ProjectPath);
+                    TiaPortal tiaPortal = tiaPortalProcess.Attach();
+                    foreach (Project project in tiaPortal.Projects)
                     {
-                        Console.WriteLine("Handling device "+device.Name+" of type "+device.TypeIdentifier);
-                        if (device.TypeIdentifier=="System:Device.S71500")
+                        Console.WriteLine("Handling project " + project.Name);
+                        foreach (Siemens.Engineering.HW.Device device in project.Devices)
                         {
-                            foreach (Siemens.Engineering.HW.DeviceItem deviceItem in device.DeviceItems)
+                            Console.WriteLine("Handling device " + device.Name + " of type " + device.TypeIdentifier);
+                            if (device.TypeIdentifier == "System:Device.S71500")
                             {
-                                Console.WriteLine("Handling device item " + deviceItem.Name + " of type "+deviceItem.TypeIdentifier); 
-                                if (deviceItem.Name.Contains("PLC"))
+                                foreach (Siemens.Engineering.HW.DeviceItem deviceItem in device.DeviceItems)
+                                {
+                                    Console.WriteLine("Handling device item " + deviceItem.Name + " of type " + deviceItem.TypeIdentifier);
+                                    if (deviceItem.Name.Contains("PLC"))
                                     {
                                         Console.WriteLine("Handling PLC device item");
                                         Siemens.Engineering.HW.Features.SoftwareContainer softwareContainer = ((IEngineeringServiceProvider)deviceItem).GetService<SoftwareContainer>();
@@ -122,13 +151,13 @@ namespace TiaExportBlocks
                                             }
                                             foreach (PlcBlockGroup blockGroup in software.BlockGroup.Groups)
                                             {
-                                                Console.WriteLine("Handling block group "+blockGroup.Name);
+                                                Console.WriteLine("Handling block group " + blockGroup.Name);
                                                 foreach (PlcBlock block in blockGroup.Blocks)
                                                 {
                                                     HandleBlock(block, software);
                                                 }
                                             }
-                                            
+
                                             foreach (PlcType plcType in software.TypeGroup.Types)
                                             {
                                                 Console.WriteLine("Handling type " + plcType.Name);
@@ -136,17 +165,18 @@ namespace TiaExportBlocks
                                             }
                                             ExportAllTagTables(software);
                                         }
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                watch.Stop();
+                Console.WriteLine($"Execution Time: {watch.ElapsedMilliseconds} ms");
+                Console.WriteLine("Done");
+                Console.ReadLine();
+                return;
             }
-            watch.Stop();
-            Console.WriteLine($"Execution Time: {watch.ElapsedMilliseconds} ms");
-            Console.WriteLine("Done");
-            Console.ReadLine();
-            return;
         }
     }
 }
