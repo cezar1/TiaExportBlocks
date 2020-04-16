@@ -116,7 +116,7 @@ namespace TiaExportBlocks
                 CheckDirectory(exportLocation + @"\scl");
                 CheckDirectory(exportLocation + @"\db");
                 CheckDirectory(exportLocation + @"\udt");
-                CheckDirectory(exportLocation + @"\tag_tables");
+                CheckDirectory(exportLocation + @"\tag_tables\xml");
                 var watch = new System.Diagnostics.Stopwatch();
                 watch.Start();
                 Console.WriteLine("Enumerating TIA processes..");
