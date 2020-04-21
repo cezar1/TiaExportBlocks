@@ -5,6 +5,10 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Siemens.Engineering;
+using Siemens.Engineering.Hmi;
+using Siemens.Engineering.Hmi.Tag;
+using Siemens.Engineering.Hmi.TextGraphicList;
+using Siemens.Engineering.HW;
 using Siemens.Engineering.HW.Features;
 using Siemens.Engineering.SW;
 using Siemens.Engineering.SW.Blocks;
@@ -72,11 +76,37 @@ namespace TiaExportBlocks
                 ExportUserGroupDeep(userGroup);
             }
         }
+        private static void ExportBlocks(PlcSoftware software)
+        {
+            string name = software.Name;
+            Console.WriteLine(name);
+            foreach (PlcBlock block in software.BlockGroup.Blocks)
+            {
+                HandleBlock(block, software);
+            }
+            foreach (PlcBlockGroup blockGroup in software.BlockGroup.Groups)
+            {
+                Console.WriteLine("Handling block group " + blockGroup.Name);
+                foreach (PlcBlock block in blockGroup.Blocks)
+                {
+                    HandleBlock(block, software);
+                }
+            }
+
+        }
+        private static void ExportTypes(PlcSoftware software)
+        {
+            foreach (PlcType plcType in software.TypeGroup.Types)
+            {
+                Console.WriteLine("Handling type " + plcType.Name);
+                HandleType(plcType, software);
+            }
+        }
         private static void ExportTagTables(PlcTagTableComposition tagTables)
         {
             foreach (PlcTagTable table in tagTables)
             {
-                string filePath = exportLocation + @"\tag_tables\"+table.Name + ".xml";
+                string filePath = exportLocation + @"\tag_tables\xml\"+table.Name + ".xml";
                 var fileInfo = new FileInfo(filePath);
                 Console.WriteLine(table.Name+" to "+ fileInfo.FullName);
                 if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -91,6 +121,85 @@ namespace TiaExportBlocks
                 ExportUserGroupDeep(userGroup);
             }
         }
+        //Exports all tag tables from an HMI device 
+        private static void ExportAllTagTablesFromHMITarget(HmiTarget hmitarget) 
+        {    
+            TagSystemFolder sysFolder = hmitarget.TagFolder;        
+            //First export the tables in underlying user folder    
+            foreach (TagUserFolder userFolder in sysFolder.Folders)    
+            {            
+                ExportUserFolderDeep(userFolder);    
+            }        
+            //then, export all tables in the system folder    
+            ExportTablesInSystemFolder(sysFolder); 
+        }    
+        private static void ExportUserFolderDeep(TagUserFolder rootUserFolder) 
+        {            
+            foreach (TagUserFolder userFolder in rootUserFolder.Folders)            
+            {                    
+                ExportUserFolderDeep(userFolder);            
+            }            
+            ExportTablesInUserFolder(rootUserFolder); 
+        }
+        private static void ExportTablesInUserFolder(TagUserFolder folderToExport) 
+        { 
+            TagTableComposition tables = folderToExport.TagTables; 
+            foreach (TagTable table in tables) 
+            {
+                string extension = ".xml";
+                var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                try
+                {
+                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    Console.WriteLine(table.Name + " to " + fileInfo.FullName);
+                    table.Export(fileInfo, ExportOptions.WithDefaults);
+                }
+                catch (Exception exc)
+                {
+                    Console.WriteLine(exc.ToString());
+                }
+            } 
+        }
+        private static void ExportTablesInSystemFolder(TagSystemFolder folderToExport) 
+        { 
+            TagTableComposition tables = folderToExport.TagTables; 
+            foreach (TagTable table in tables) 
+            {
+                string extension = ".xml";
+                var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                try
+                {
+                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    Console.WriteLine(table.Name + " to " + fileInfo.FullName);
+                    table.Export(fileInfo, ExportOptions.WithDefaults);
+                }
+                catch (Exception exc)
+                {
+                    Console.WriteLine(exc.ToString());
+                }
+            } 
+        }
+        //Export TextLists 
+        private static void ExportTextLists(HmiTarget hmitarget) 
+        {    
+            TextListComposition text = hmitarget.TextLists;    
+            foreach (TextList textList in text)    
+            {
+                string extension = ".xml";
+                var fileInfo = new FileInfo(exportLocation + @"\hmi_text_lists\xml\" + textList.Name + extension);
+                try
+                {
+                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    Console.WriteLine(textList.Name + " to " + fileInfo.FullName);
+                    textList.Export(fileInfo, ExportOptions.WithDefaults);
+                }
+                catch (Exception exc)
+                {
+                    Console.WriteLine(exc.ToString());
+                }
+            } 
+        }
+
         private static void CheckDirectory(string path)
         {
             if (!Directory.Exists(path))
@@ -98,8 +207,8 @@ namespace TiaExportBlocks
                 Console.WriteLine("Export location "+path+" does not exist");
                 Directory.CreateDirectory(path);
             }
-        }
-        static void Main(string[] args)
+        }                
+            static void Main(string[] args)
         {
 
             if (args == null || args.Length == 0 || args.Length>1)
@@ -117,6 +226,8 @@ namespace TiaExportBlocks
                 CheckDirectory(exportLocation + @"\db");
                 CheckDirectory(exportLocation + @"\udt");
                 CheckDirectory(exportLocation + @"\tag_tables\xml");
+                CheckDirectory(exportLocation + @"\hmi_tag_tables\xml");
+                CheckDirectory(exportLocation + @"\hmi_text_lists\xml");
                 var watch = new System.Diagnostics.Stopwatch();
                 watch.Start();
                 Console.WriteLine("Enumerating TIA processes..");
@@ -130,7 +241,8 @@ namespace TiaExportBlocks
                         Console.WriteLine("Handling project " + project.Name);
                         foreach (Siemens.Engineering.HW.Device device in project.Devices)
                         {
-                            Console.WriteLine("Handling device " + device.Name + " of type " + device.TypeIdentifier);
+                            Console.WriteLine("Handling device " + device.Name + " of type [" + device.TypeIdentifier+"]");
+                            
                             if (device.TypeIdentifier == "System:Device.S71500")
                             {
                                 foreach (Siemens.Engineering.HW.DeviceItem deviceItem in device.DeviceItems)
@@ -143,28 +255,30 @@ namespace TiaExportBlocks
                                         if (softwareContainer != null)
                                         {
                                             PlcSoftware software = softwareContainer.Software as PlcSoftware;
-                                            string name = software.Name;
-                                            Console.WriteLine(name);
-                                            foreach (PlcBlock block in software.BlockGroup.Blocks)
-                                            {
-                                                HandleBlock(block, software);
-                                            }
-                                            foreach (PlcBlockGroup blockGroup in software.BlockGroup.Groups)
-                                            {
-                                                Console.WriteLine("Handling block group " + blockGroup.Name);
-                                                foreach (PlcBlock block in blockGroup.Blocks)
-                                                {
-                                                    HandleBlock(block, software);
-                                                }
-                                            }
-
-                                            foreach (PlcType plcType in software.TypeGroup.Types)
-                                            {
-                                                Console.WriteLine("Handling type " + plcType.Name);
-                                                HandleType(plcType, software);
-                                            }
+                                            ExportBlocks(software);
+                                            ExportTypes(software);
                                             ExportAllTagTables(software);
                                         }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                foreach (Siemens.Engineering.HW.DeviceItem deviceItem in device.DeviceItems)
+                                {
+                                    Console.WriteLine("Handling device item [" + deviceItem.Name + "] of type [" + deviceItem.TypeIdentifier+"]");
+                                    if (device.Name.Contains("APS"))
+                                    {
+                                        Console.WriteLine("Handling HMI device item");
+                                        DeviceItem deviceItemToGetService = deviceItem as DeviceItem; 
+                                        SoftwareContainer softwareContainer = deviceItemToGetService.GetService<SoftwareContainer>();
+                                        if (softwareContainer != null)
+                                        {
+                                            HmiTarget software = softwareContainer.Software as HmiTarget;
+                                            ExportAllTagTablesFromHMITarget(software);
+                                            ExportTextLists(software);
+                                        }
+                                        else { Console.WriteLine("SW Container is null"); }
                                     }
                                 }
                             }
