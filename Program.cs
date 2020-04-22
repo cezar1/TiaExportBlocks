@@ -288,7 +288,7 @@ namespace TiaExportBlocks
                 watch.Stop();
                 Console.WriteLine($"Execution Time: {watch.ElapsedMilliseconds} ms");
                 Console.WriteLine("Done");
-                Console.ReadLine();
+                //Console.ReadLine();
                 return;
             }
         }
