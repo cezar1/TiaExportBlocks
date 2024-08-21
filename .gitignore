@@ -339,3 +339,4 @@ ASALocalRun/
 # BeatPulse healthcheck temp database
 healthchecksdb
 /dll/V15_1/Siemens.Engineering.dll
+dll/V16/Siemens.Engineering.dll

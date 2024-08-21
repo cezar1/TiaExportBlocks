@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Siemens.Engineering;
@@ -20,43 +21,104 @@ namespace TiaExportBlocks
 {
     class Program
     {
-        static Dictionary<string, string> programLanguageToExtension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" } };
-        static Dictionary<string, string> programLanguageToFolderPrefixExtension = new Dictionary<string, string> { { "SCL", @"\scl\" }, { "DB", @"\db\" } };
+        static Dictionary<string, string> programLanguageToExtension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" }, { "STL", ".awl" }};
+        static Dictionary<string, string> programLanguageToFolderPrefixExtension = new Dictionary<string, string> { { "SCL", @"\scl\" }, { "DB", @"\db\" }, { "STL", @"\stl\" } };
         static string exportLocation;
-        static void HandleBlock(PlcBlock block,PlcSoftware software)
+        static void HandleBlock(PlcBlock block,PlcSoftware software, string currentPath, string rootPrefix)
         {
             PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             //Console.WriteLine(block.Name + " " + block.GetType()+ " " +block.ProgrammingLanguage);
-            if (programLanguageToExtension.ContainsKey(block.ProgrammingLanguage.ToString()))
+            string block_programming_language=block.ProgrammingLanguage.ToString();
+            if (programLanguageToExtension.ContainsKey(block_programming_language))
             {
                 string extension;
                 programLanguageToExtension.TryGetValue(block.ProgrammingLanguage.ToString(),out extension);
                 string folder_prefix;
                 programLanguageToFolderPrefixExtension.TryGetValue(block.ProgrammingLanguage.ToString(), out folder_prefix);
-                var fileInfo = new FileInfo(exportLocation + folder_prefix+block.Name + extension);
+                // Convert the folder structure to a valid path
+                string[] folderStructure = currentPath.Split('\\');
+                for (int i = 0; i < folderStructure.Length; i++)
+                {
+                    folderStructure[i] = MakeValidFileName(folderStructure[i]);
+                }
+                string sanitizedCurrentPath= Path.Combine(folderStructure);
+                var fileInfo = new FileInfo(exportLocation+@"\"+ rootPrefix+@"\"+Path.Combine(folder_prefix, sanitizedCurrentPath, MakeValidFileName(block.Name)+ extension));
+                var fileInfoTemp = new FileInfo(exportLocation + MakeValidFileName(block.Name) + extension);
+                //var fileInfo = new FileInfo(exportLocation + folder_prefix+ '\\' + sanitizedFolderPrefix + '\\' +MakeValidFileName(block.Name) + extension);
+                if (!fileInfo.Directory.Exists)
+                {
+                    Directory.CreateDirectory(fileInfo.Directory.FullName);
+                }
                 var blocks = new List<PlcBlock>() { block };
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
-                    Console.WriteLine(block.Name + " to " + fileInfo.FullName);
-                    externalSourceGroup.GenerateSource(blocks, fileInfo, GenerateOptions.None);
+                    Console.WriteLine("RP ["+ rootPrefix + "] Block [" + block.Name + "] prefix [" + currentPath + "] to " + fileInfo.FullName);
+                    externalSourceGroup.GenerateSource(blocks, fileInfoTemp, GenerateOptions.None);
+                    File.Move(fileInfoTemp.FullName, fileInfo.FullName);
                 }
                 catch (Exception exc)
                 {
                     Console.WriteLine(exc.ToString());
                 }
             }
+            else
+            {
+                Console.WriteLine(block.Name + " programming language " + block_programming_language + " not supported");
+            }
 
         }
-        static void HandleType(PlcType plcType, PlcSoftware software)
+        static void HandleBlockGroup(PlcBlockGroup blockGroup, PlcSoftware software, string currentPath, string rootPrefix)
+        {
+            string newPath = Path.Combine(currentPath, MakeValidFileName(blockGroup.Name));
+            try
+            {
+                Console.WriteLine("Handling block group: " + blockGroup.Name);
+
+                // Handle blocks in the current block group
+                foreach (PlcBlock block in blockGroup.Blocks)
+                {
+                    HandleBlock(block, software, newPath, rootPrefix);
+                }
+
+                // Recursively handle nested block groups
+                foreach (PlcBlockGroup nestedGroup in blockGroup.Groups)
+                {
+                    HandleBlockGroup(nestedGroup, software, newPath, rootPrefix);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error handling block group: " + blockGroup.Name + " - " + ex.Message);
+            }
+        }
+        static string MakeValidFileName(string name)
+        {
+            // Replace invalid characters with an underscore
+            char[] invalidChars = Path.GetInvalidFileNameChars();
+            foreach (char c in invalidChars)
+            {
+                name = name.Replace(c, '_');
+            }
+            return name;
+        }
+        static void HandleType(PlcType plcType, PlcSoftware software,string rootPrefix)
         {
             PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             string extension=".udt";
-            var fileInfo = new FileInfo(exportLocation + @"\udt\"+plcType.Name + extension);
+            var fileInfo = new FileInfo(exportLocation + @"\" + rootPrefix + @"\udt\" + plcType.Name + extension);
             var blocks = new List<PlcType>() { plcType };
             try
             {
-                if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                if (!fileInfo.Directory.Exists)
+                {
+                    Directory.CreateDirectory(fileInfo.Directory.FullName);
+                }
+                if (File.Exists(fileInfo.FullName))
+                {
+                    Console.WriteLine("Deleting " + fileInfo.FullName);
+                    File.Delete(fileInfo.FullName);
+                }
                 externalSourceGroup.GenerateSource(blocks, fileInfo, GenerateOptions.None);
             }
             catch (Exception exc)
@@ -65,60 +127,54 @@ namespace TiaExportBlocks
             }
 
         }
-        private static void ExportAllTagTables(PlcSoftware plcSoftware)
+        private static void ExportAllTagTables(PlcSoftware plcSoftware, string rootPrefix)
         {
             PlcTagTableSystemGroup plcTagTableSystemGroup = plcSoftware.TagTableGroup;
             // Export all tables in the system group
-            ExportTagTables(plcTagTableSystemGroup.TagTables);
+            ExportTagTables(plcTagTableSystemGroup.TagTables, rootPrefix);
             // Export the tables in underlying user groups
             foreach (PlcTagTableUserGroup userGroup in plcTagTableSystemGroup.Groups)
             {
-                ExportUserGroupDeep(userGroup);
+                ExportUserGroupDeep(userGroup, rootPrefix);
             }
         }
-        private static void ExportBlocks(PlcSoftware software)
+        private static void ExportBlocks(PlcSoftware software, string rootPrefix)
         {
             string name = software.Name;
             Console.WriteLine(name);
             foreach (PlcBlock block in software.BlockGroup.Blocks)
             {
-                HandleBlock(block, software);
+                HandleBlock(block, software, string.Empty, rootPrefix);
             }
-            foreach (PlcBlockGroup blockGroup in software.BlockGroup.Groups)
-            {
-                Console.WriteLine("Handling block group " + blockGroup.Name);
-                foreach (PlcBlock block in blockGroup.Blocks)
-                {
-                    HandleBlock(block, software);
-                }
-            }
+            // Recursively handle block groups and blocks
+            HandleBlockGroup(software.BlockGroup, software, string.Empty, rootPrefix);
 
         }
-        private static void ExportTypes(PlcSoftware software)
+        private static void ExportTypes(PlcSoftware software, string rootPrefix)
         {
             foreach (PlcType plcType in software.TypeGroup.Types)
             {
-                Console.WriteLine("Handling type " + plcType.Name);
-                HandleType(plcType, software);
+                Console.WriteLine("Handling type at prefix " + rootPrefix + " named "+ plcType.Name);
+                HandleType(plcType, software, rootPrefix);
             }
         }
-        private static void ExportTagTables(PlcTagTableComposition tagTables)
+        private static void ExportTagTables(PlcTagTableComposition tagTables, string rootPrefix)
         {
             foreach (PlcTagTable table in tagTables)
             {
-                string filePath = exportLocation + @"\tag_tables\xml\"+table.Name + ".xml";
+                string filePath = exportLocation + @"\tag_tables\xml\" + rootPrefix + @"\" + table.Name + ".xml";
                 var fileInfo = new FileInfo(filePath);
                 Console.WriteLine(table.Name+" to "+ fileInfo.FullName);
                 if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
                 table.Export(fileInfo, ExportOptions.WithDefaults);
             }
         }
-        private static void ExportUserGroupDeep(PlcTagTableUserGroup group)
+        private static void ExportUserGroupDeep(PlcTagTableUserGroup group, string rootPrefix)
         {
-            ExportTagTables(group.TagTables);
+            ExportTagTables(group.TagTables, rootPrefix);
             foreach (PlcTagTableUserGroup userGroup in group.Groups)
             {
-                ExportUserGroupDeep(userGroup);
+                ExportUserGroupDeep(userGroup, rootPrefix);
             }
         }
         //Exports all tag tables from an HMI device 
@@ -222,12 +278,13 @@ namespace TiaExportBlocks
                 exportLocation = args[0];
                 Console.WriteLine("Export location is " + exportLocation);
                 CheckDirectory(exportLocation);
-                CheckDirectory(exportLocation + @"\scl");
-                CheckDirectory(exportLocation + @"\db");
-                CheckDirectory(exportLocation + @"\udt");
-                CheckDirectory(exportLocation + @"\tag_tables\xml");
-                CheckDirectory(exportLocation + @"\hmi_tag_tables\xml");
-                CheckDirectory(exportLocation + @"\hmi_text_lists\xml");
+                //CheckDirectory(exportLocation + @"\scl");
+                //CheckDirectory(exportLocation + @"\stl");
+                //CheckDirectory(exportLocation + @"\db");
+                //CheckDirectory(exportLocation + @"\udt");
+                //CheckDirectory(exportLocation + @"\tag_tables\xml");
+                //CheckDirectory(exportLocation + @"\hmi_tag_tables\xml");
+                //CheckDirectory(exportLocation + @"\hmi_text_lists\xml");
                 var watch = new System.Diagnostics.Stopwatch();
                 watch.Start();
                 Console.WriteLine("Enumerating TIA processes..");
@@ -236,7 +293,18 @@ namespace TiaExportBlocks
                     Console.WriteLine("Process ID " + tiaPortalProcess.Id);
                     Console.WriteLine("Project PATH " + tiaPortalProcess.ProjectPath);
                     TiaPortal tiaPortal = tiaPortalProcess.Attach();
-                    foreach (Project project in tiaPortal.Projects)
+                    // Check if attachment was successful
+                    if (tiaPortal == null)
+                    {
+                        Console.WriteLine("Failed to attach to TIA Portal.");
+                        return;
+                    }
+                    var projects = tiaPortal.Projects;
+                    if (projects == null || projects.Count == 0)
+                    {
+                        Console.WriteLine("No projects found in TIA Portal.");
+                    }
+                    foreach (Project project in projects)
                     {
                         Console.WriteLine("Handling project " + project.Name);
                         foreach (Siemens.Engineering.HW.Device device in project.Devices)
@@ -252,12 +320,13 @@ namespace TiaExportBlocks
                                     {
                                         Console.WriteLine("Handling PLC device item");
                                         Siemens.Engineering.HW.Features.SoftwareContainer softwareContainer = ((IEngineeringServiceProvider)deviceItem).GetService<SoftwareContainer>();
+                                        string rootPrefix = deviceItem.Name;
                                         if (softwareContainer != null)
                                         {
                                             PlcSoftware software = softwareContainer.Software as PlcSoftware;
-                                            ExportBlocks(software);
-                                            ExportTypes(software);
-                                            ExportAllTagTables(software);
+                                            ExportBlocks(software,rootPrefix);
+                                            ExportTypes(software, rootPrefix);
+                                            ExportAllTagTables(software, rootPrefix);
                                         }
                                     }
                                 }
@@ -267,8 +336,7 @@ namespace TiaExportBlocks
                                 foreach (Siemens.Engineering.HW.DeviceItem deviceItem in device.DeviceItems)
                                 {
                                     Console.WriteLine("Handling device item [" + deviceItem.Name + "] of type [" + deviceItem.TypeIdentifier+"]");
-                                    if (device.Name.Contains("APS"))
-                                    {
+                                    
                                         Console.WriteLine("Handling HMI device item");
                                         DeviceItem deviceItemToGetService = deviceItem as DeviceItem; 
                                         SoftwareContainer softwareContainer = deviceItemToGetService.GetService<SoftwareContainer>();
@@ -278,8 +346,10 @@ namespace TiaExportBlocks
                                             ExportAllTagTablesFromHMITarget(software);
                                             ExportTextLists(software);
                                         }
-                                        else { Console.WriteLine("SW Container is null"); }
-                                    }
+                                        else 
+                                        { Console.WriteLine("SW Container is null"); 
+                                        }
+                                    
                                 }
                             }
                         }

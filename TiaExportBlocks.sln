@@ -1,9 +1,14 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.30011.22
+# Visual Studio Version 17
+VisualStudioVersion = 17.10.35122.118
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TiaExportBlocks", "TiaExportBlocks.csproj", "{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{6BDCDCE0-EF3A-4B11-B352-C6048A69DDB7}"
+	ProjectSection(SolutionItems) = preProject
+		dll\V16\Siemens.Engineering.dll = dll\V16\Siemens.Engineering.dll
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

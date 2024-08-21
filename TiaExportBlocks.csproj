@@ -8,7 +8,7 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>TiaExportBlocks</RootNamespace>
     <AssemblyName>TiaExportBlocks</AssemblyName>
-    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <Deterministic>true</Deterministic>
@@ -27,6 +27,7 @@
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
+    <TargetFrameworkProfile />
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -53,7 +54,7 @@
   <ItemGroup>
     <Reference Include="Siemens.Engineering, Version=15.1.0.0, Culture=neutral, PublicKeyToken=d29ec89bac048f84, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>dll\V15_1\Siemens.Engineering.dll</HintPath>
+      <HintPath>dll\V16\Siemens.Engineering.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
