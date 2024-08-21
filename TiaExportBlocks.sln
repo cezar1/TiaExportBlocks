@@ -13,11 +13,14 @@ EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
+		plc_logging_base|Any CPU = plc_logging_base|Any CPU
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}.plc_logging_base|Any CPU.ActiveCfg = plc_logging_base|Any CPU
+		{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}.plc_logging_base|Any CPU.Build.0 = plc_logging_base|Any CPU
 		{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{ABDFD2F4-02BB-4EAC-A000-FFA032E424FE}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection

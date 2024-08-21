@@ -47,6 +47,7 @@ namespace TiaExportBlocks
                 //var fileInfo = new FileInfo(exportLocation + folder_prefix+ '\\' + sanitizedFolderPrefix + '\\' +MakeValidFileName(block.Name) + extension);
                 if (!fileInfo.Directory.Exists)
                 {
+                    Console.WriteLine("Creating [" + fileInfo.FullName + "]");
                     Directory.CreateDirectory(fileInfo.Directory.FullName);
                 }
                 var blocks = new List<PlcBlock>() { block };
@@ -142,10 +143,6 @@ namespace TiaExportBlocks
         {
             string name = software.Name;
             Console.WriteLine(name);
-            foreach (PlcBlock block in software.BlockGroup.Blocks)
-            {
-                HandleBlock(block, software, string.Empty, rootPrefix);
-            }
             // Recursively handle block groups and blocks
             HandleBlockGroup(software.BlockGroup, software, string.Empty, rootPrefix);
 
@@ -158,15 +155,31 @@ namespace TiaExportBlocks
                 HandleType(plcType, software, rootPrefix);
             }
         }
+        public static void EnsureDirectoryExists(string filePath)
+        {
+            // Extract the directory part from the file path
+            string directoryPath = Path.GetDirectoryName(filePath);
+
+            if (!string.IsNullOrEmpty(directoryPath))
+            {
+                // Ensure the directory exists
+                Directory.CreateDirectory(directoryPath);
+            }
+        }
         private static void ExportTagTables(PlcTagTableComposition tagTables, string rootPrefix)
         {
             foreach (PlcTagTable table in tagTables)
             {
-                string filePath = exportLocation + @"\tag_tables\xml\" + rootPrefix + @"\" + table.Name + ".xml";
+                Console.WriteLine(table.Name);
+                var fileInfoTemp = new FileInfo(exportLocation +@"\"+ MakeValidFileName(table.Name) + ".xml");
+                if (File.Exists(fileInfoTemp.FullName)) File.Delete(fileInfoTemp.FullName);
+                table.Export(fileInfoTemp, ExportOptions.WithDefaults);
+                string filePath = exportLocation +@"\"+ rootPrefix+@"\tag_tables\xml\"  + @"\" + table.Name + ".xml";
                 var fileInfo = new FileInfo(filePath);
-                Console.WriteLine(table.Name+" to "+ fileInfo.FullName);
+                Console.WriteLine(table.Name + " to " + fileInfo.FullName);
+                EnsureDirectoryExists(filePath);
                 if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
-                table.Export(fileInfo, ExportOptions.WithDefaults);
+                File.Move(fileInfoTemp.FullName, fileInfo.FullName);
             }
         }
         private static void ExportUserGroupDeep(PlcTagTableUserGroup group, string rootPrefix)
@@ -256,6 +269,14 @@ namespace TiaExportBlocks
             } 
         }
 
+        private static void RemoveDirectory(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                Console.WriteLine("Deleting location " + path + ".");
+                Directory.Delete(path,true);
+            }
+        }
         private static void CheckDirectory(string path)
         {
             if (!Directory.Exists(path))
@@ -277,14 +298,8 @@ namespace TiaExportBlocks
             {
                 exportLocation = args[0];
                 Console.WriteLine("Export location is " + exportLocation);
+                RemoveDirectory(exportLocation);
                 CheckDirectory(exportLocation);
-                //CheckDirectory(exportLocation + @"\scl");
-                //CheckDirectory(exportLocation + @"\stl");
-                //CheckDirectory(exportLocation + @"\db");
-                //CheckDirectory(exportLocation + @"\udt");
-                //CheckDirectory(exportLocation + @"\tag_tables\xml");
-                //CheckDirectory(exportLocation + @"\hmi_tag_tables\xml");
-                //CheckDirectory(exportLocation + @"\hmi_text_lists\xml");
                 var watch = new System.Diagnostics.Stopwatch();
                 watch.Start();
                 Console.WriteLine("Enumerating TIA processes..");
