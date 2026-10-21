@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Siemens.Engineering;
 using Siemens.Engineering.Hmi;
@@ -84,9 +85,121 @@ namespace TiaExportBlocks
             File.Delete(tempPath);
             exportedCount++;
         }
+
+        // Batch export: each Openness GenerateSource call costs about the same
+        // whether it carries one block or many, so blocks are generated in
+        // batches (--batch N, default 50) into one file and split back into the
+        // usual one-file-per-block layout. A batch that fails or does not split
+        // into exactly its blocks is exported block by block instead.
+        static int batchSize = 50;
+        static Dictionary<string, List<KeyValuePair<PlcBlock, string>>> pendingBlocks = new Dictionary<string, List<KeyValuePair<PlcBlock, string>>>();
+        static List<KeyValuePair<PlcType, string>> pendingTypes = new List<KeyValuePair<PlcType, string>>();
+        static Regex blockStart = new Regex(@"^(FUNCTION_BLOCK|FUNCTION|ORGANIZATION_BLOCK|DATA_BLOCK|TYPE)\s+""([^""]+)""");
+        static UTF8Encoding utf8WithBom = new UTF8Encoding(true);
+
+        // Splits a generated source into its top-level blocks, each as written by a
+        // single-block export: the block's lines, its END_ line and one empty line.
+        static Dictionary<string, string> SplitSource(string text)
+        {
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            List<string> current = null;
+            string name = null;
+            string endKeyword = null;
+            foreach (string line in lines)
+            {
+                if (current == null)
+                {
+                    Match m = blockStart.Match(line);
+                    if (!m.Success) continue;
+                    current = new List<string>();
+                    name = m.Groups[2].Value;
+                    endKeyword = "END_" + m.Groups[1].Value;
+                }
+                current.Add(line);
+                if (line.TrimEnd() == endKeyword)
+                {
+                    result[name] = string.Join("\r\n", current) + "\r\n\r\n";
+                    current = null;
+                }
+            }
+            return result;
+        }
+
+        static void ExportBatched<T>(List<KeyValuePair<T, string>> items, string extension, Func<T, string> nameOf, Action<List<T>, FileInfo> generate)
+        {
+            for (int start = 0; start < items.Count; start += batchSize)
+            {
+                var batch = items.Skip(start).Take(batchSize).ToList();
+                bool done = false;
+                if (batch.Count > 1)
+                {
+                    var temp = new FileInfo(LocalTempFile("batch" + extension));
+                    try
+                    {
+                        Console.WriteLine("Generating " + batch.Count + " " + extension + " blocks in one batch");
+                        generate(batch.Select(b => b.Key).ToList(), temp);
+                        var parts = SplitSource(File.ReadAllText(temp.FullName, Encoding.UTF8));
+                        if (parts.Count == batch.Count && batch.All(b => parts.ContainsKey(nameOf(b.Key))))
+                        {
+                            foreach (var b in batch)
+                            {
+                                EnsureDirectoryExists(b.Value);
+                                File.WriteAllText(b.Value, parts[nameOf(b.Key)], utf8WithBom);
+                                exportedCount++;
+                            }
+                            done = true;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Batch did not split into its " + batch.Count + " blocks (" + parts.Count + " found): exporting them one by one");
+                        }
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.WriteLine("Batch export failed (" + exc.Message + "): exporting its blocks one by one");
+                    }
+                    finally
+                    {
+                        if (File.Exists(temp.FullName)) File.Delete(temp.FullName);
+                    }
+                }
+                if (done) continue;
+                foreach (var b in batch)
+                {
+                    var temp = new FileInfo(LocalTempFile(MakeValidFileName(nameOf(b.Key)) + extension));
+                    try
+                    {
+                        Console.WriteLine("Block [" + nameOf(b.Key) + "] to " + b.Value);
+                        generate(new List<T>() { b.Key }, temp);
+                        PlaceFile(temp.FullName, b.Value);
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.WriteLine(exc.ToString());
+                    }
+                }
+            }
+        }
+
+        static void FlushBlocks(PlcSoftware software)
+        {
+            PlcExternalSourceSystemGroup group = software.ExternalSourceGroup;
+            foreach (var entry in pendingBlocks)
+            {
+                ExportBatched(entry.Value, entry.Key, b => b.Name, (list, file) => group.GenerateSource(list, file, GenerateOptions.None));
+            }
+            pendingBlocks.Clear();
+        }
+
+        static void FlushTypes(PlcSoftware software)
+        {
+            PlcExternalSourceSystemGroup group = software.ExternalSourceGroup;
+            ExportBatched(pendingTypes, ".udt", t => t.Name, (list, file) => group.GenerateSource(list, file, GenerateOptions.None));
+            pendingTypes.Clear();
+        }
         static void HandleBlock(PlcBlock block,PlcSoftware software, string currentPath, string rootPrefix)
         {
-            PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             //Console.WriteLine(block.Name + " " + block.GetType()+ " " +block.ProgrammingLanguage);
             string block_programming_language=block.ProgrammingLanguage.ToString();
             if (programLanguageToExtension.ContainsKey(block_programming_language))
@@ -104,24 +217,13 @@ namespace TiaExportBlocks
                 string sanitizedCurrentPath= Path.Combine(folderStructure);
                 var fileInfo = new FileInfo(exportLocation+@"\"+ rootPrefix+@"\"+Path.Combine(folder_prefix, sanitizedCurrentPath, MakeValidFileName(block.Name)+ extension));
                 if (!NeedsExport(fileInfo.FullName, ModifiedStamp(block))) return;
-                var fileInfoTemp = new FileInfo(LocalTempFile(MakeValidFileName(block.Name) + extension));
-                //var fileInfo = new FileInfo(exportLocation + folder_prefix+ '\\' + sanitizedFolderPrefix + '\\' +MakeValidFileName(block.Name) + extension);
-                if (!fileInfo.Directory.Exists)
+                List<KeyValuePair<PlcBlock, string>> queue;
+                if (!pendingBlocks.TryGetValue(extension, out queue))
                 {
-                    Console.WriteLine("Creating [" + fileInfo.FullName + "]");
-                    Directory.CreateDirectory(fileInfo.Directory.FullName);
+                    queue = new List<KeyValuePair<PlcBlock, string>>();
+                    pendingBlocks[extension] = queue;
                 }
-                var blocks = new List<PlcBlock>() { block };
-                try
-                {
-                    Console.WriteLine("RP ["+ rootPrefix + "] Block [" + block.Name + "] prefix [" + currentPath + "] to " + fileInfo.FullName);
-                    externalSourceGroup.GenerateSource(blocks, fileInfoTemp, GenerateOptions.None);
-                    PlaceFile(fileInfoTemp.FullName, fileInfo.FullName);
-                }
-                catch (Exception exc)
-                {
-                    Console.WriteLine(exc.ToString());
-                }
+                queue.Add(new KeyValuePair<PlcBlock, string>(block, fileInfo.FullName));
             }
             else
             {
@@ -165,21 +267,10 @@ namespace TiaExportBlocks
         }
         static void HandleType(PlcType plcType, PlcSoftware software,string rootPrefix)
         {
-            PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             string extension=".udt";
             var fileInfo = new FileInfo(exportLocation + @"\" + rootPrefix + @"\udt\" + plcType.Name + extension);
             if (!NeedsExport(fileInfo.FullName, ModifiedStamp(plcType))) return;
-            var blocks = new List<PlcType>() { plcType };
-            try
-            {
-                var fileInfoTemp = new FileInfo(LocalTempFile(MakeValidFileName(plcType.Name) + extension));
-                externalSourceGroup.GenerateSource(blocks, fileInfoTemp, GenerateOptions.None);
-                PlaceFile(fileInfoTemp.FullName, fileInfo.FullName);
-            }
-            catch (Exception exc)
-            {
-                Console.WriteLine(exc.ToString());
-            }
+            pendingTypes.Add(new KeyValuePair<PlcType, string>(plcType, fileInfo.FullName));
 
         }
         private static void ExportAllTagTables(PlcSoftware plcSoftware, string rootPrefix)
@@ -199,6 +290,7 @@ namespace TiaExportBlocks
             Console.WriteLine(name);
             // Recursively handle block groups and blocks
             HandleBlockGroup(software.BlockGroup, software, string.Empty, rootPrefix);
+            FlushBlocks(software);
 
         }
         private static void ExportTypes(PlcSoftware software, string rootPrefix)
@@ -208,6 +300,7 @@ namespace TiaExportBlocks
                 Console.WriteLine("Handling type at prefix " + rootPrefix + " named "+ plcType.Name);
                 HandleType(plcType, software, rootPrefix);
             }
+            FlushTypes(software);
         }
         public static void EnsureDirectoryExists(string filePath)
         {
@@ -415,17 +508,30 @@ namespace TiaExportBlocks
         {
 
             fullExport = args != null && args.Any(a => string.Equals(a, "--full", StringComparison.OrdinalIgnoreCase));
-            var paths = args == null ? new List<string>() : args.Where(a => !a.StartsWith("--")).ToList();
+            var paths = new List<string>();
+            for (int i = 0; args != null && i < args.Length; i++)
+            {
+                int n;
+                if (string.Equals(args[i], "--batch", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && int.TryParse(args[i + 1], out n) && n > 0)
+                {
+                    batchSize = n;
+                    i++;
+                }
+                else if (!args[i].StartsWith("--"))
+                {
+                    paths.Add(args[i]);
+                }
+            }
             if (paths.Count != 1)
             {
                 Console.WriteLine("No arguments provided");
-                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test [--full]");
+                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test [--full] [--batch N]");
                 Console.ReadLine();
             }
             else
             {
                 exportLocation = Path.GetFullPath(paths[0]).TrimEnd('\\');
-                Console.WriteLine("Export location is " + exportLocation + (fullExport ? " (full export)" : " (incremental export)"));
+                Console.WriteLine("Export location is " + exportLocation + (fullExport ? " (full export)" : " (incremental export)") + ", batch size " + batchSize);
                 if (fullExport) RemoveDirectory(exportLocation);
                 CheckDirectory(exportLocation);
                 var watch = new System.Diagnostics.Stopwatch();
