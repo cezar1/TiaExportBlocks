@@ -8,6 +8,10 @@ This application connects to the TIA portal (if there is one active) and then to
 
 The export location must be specified as an input argument otherwise the program will not run.
 
+By default the export is incremental: only blocks, types and tag tables whose modification date in TIA changed since the last export (or whose file changed or is missing) are exported again, and files of elements no longer in the project are removed. The state is kept in `%LOCALAPPDATA%\TiaExportBlocks`, outside the export location. Add `--full` to delete the export location and export everything, as before:
+
+    TiaExportBlocks.exe C:\Test [--full]
+
 Additional comments:
 + If there are multiple projects in TIA portal instances opened, all the elements will be exported in same location - with overwriting based on whichever is the last element processed.
 + The application has been tested on Windows 10 Pro x64 version 1909 with TIA V15_1 UPD2
