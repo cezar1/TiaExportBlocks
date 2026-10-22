@@ -25,10 +25,11 @@ namespace TiaExportBlocks
         static Dictionary<string, string> programLanguageToExtension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" }, { "STL", ".awl" }};
         static Dictionary<string, string> programLanguageToFolderPrefixExtension = new Dictionary<string, string> { { "SCL", @"\scl\" }, { "DB", @"\db\" }, { "STL", @"\stl\" } };
         static string exportLocation;
-        // Incremental export: a block, type or tag table is exported again only
-        // when its TIA modification stamp differs from the last export or its
-        // file is missing. --full restores the old behaviour (wipe and export all).
-        static bool fullExport;
+        // Default: wipe the export location and export everything. --incremental
+        // (opt-in) keeps the location, exports a block or type again only when its
+        // TIA modification stamp differs from the last export or its file is
+        // missing, and then deletes the files that no longer have a TIA element.
+        static bool incrementalExport;
         static Dictionary<string, long> previousStamps = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         // File write times at the last export: a file changed on disk since (e.g. a
         // git branch switch) is exported again even if TIA reports no change.
@@ -58,7 +59,7 @@ namespace TiaExportBlocks
         {
             expectedFiles.Add(targetPath);
             currentStamps[targetPath] = stamp;
-            if (fullExport || stamp < 0 || !File.Exists(targetPath)) return true;
+            if (!incrementalExport || stamp < 0 || !File.Exists(targetPath)) return true;
             long previous;
             long previousWrite;
             if (previousStamps.TryGetValue(targetPath, out previous) && previous == stamp
@@ -363,6 +364,7 @@ namespace TiaExportBlocks
             {
                 string extension = ".xml";
                 var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                expectedFiles.Add(fileInfo.FullName);
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -382,6 +384,7 @@ namespace TiaExportBlocks
             {
                 string extension = ".xml";
                 var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                expectedFiles.Add(fileInfo.FullName);
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -402,6 +405,7 @@ namespace TiaExportBlocks
             {
                 string extension = ".xml";
                 var fileInfo = new FileInfo(exportLocation + @"\hmi_text_lists\xml\" + textList.Name + extension);
+                expectedFiles.Add(fileInfo.FullName);
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -481,16 +485,21 @@ namespace TiaExportBlocks
             File.WriteAllLines(StatePath(), lines);
         }
 
-        // Removes exported files whose block, type or tag table is no longer in the project.
-        static int RemoveStaleFiles(string rootPrefix)
+        // Incremental cleanup: removes exported files whose block, type, tag table
+        // or text list is no longer in the project, then the folders left empty.
+        // Only the folders this tool writes are scanned.
+        static int RemoveStaleFiles(IEnumerable<string> plcPrefixes)
         {
             int removed = 0;
-            string root = Path.Combine(exportLocation, rootPrefix);
-            if (!Directory.Exists(root)) return 0;
+            var dirs = new List<string>();
+            foreach (string prefix in plcPrefixes)
+                foreach (string sub in new[] { "scl", "db", "stl", "udt", @"tag_tables\xml" })
+                    dirs.Add(Path.Combine(exportLocation, prefix, sub));
+            dirs.Add(Path.Combine(exportLocation, @"hmi_tag_tables\xml"));
+            dirs.Add(Path.Combine(exportLocation, @"hmi_text_lists\xml"));
             var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".scl", ".db", ".awl", ".udt", ".xml" };
-            foreach (string sub in new[] { "scl", "db", "stl", "udt", @"tag_tables\xml" })
+            foreach (string dir in dirs)
             {
-                string dir = Path.Combine(root, sub);
                 if (!Directory.Exists(dir)) continue;
                 foreach (string file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
                 {
@@ -500,6 +509,10 @@ namespace TiaExportBlocks
                     File.Delete(file);
                     removed++;
                 }
+                foreach (string sub in Directory.GetDirectories(dir, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
+                {
+                    if (!Directory.EnumerateFileSystemEntries(sub).Any()) Directory.Delete(sub);
+                }
             }
             return removed;
         }
@@ -507,7 +520,7 @@ namespace TiaExportBlocks
             static void Main(string[] args)
         {
 
-            fullExport = args != null && args.Any(a => string.Equals(a, "--full", StringComparison.OrdinalIgnoreCase));
+            incrementalExport = args != null && args.Any(a => string.Equals(a, "--incremental", StringComparison.OrdinalIgnoreCase));
             var paths = new List<string>();
             for (int i = 0; args != null && i < args.Length; i++)
             {
@@ -525,14 +538,14 @@ namespace TiaExportBlocks
             if (paths.Count != 1)
             {
                 Console.WriteLine("No arguments provided");
-                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test [--full] [--batch N]");
+                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test [--incremental] [--batch N]");
                 Console.ReadLine();
             }
             else
             {
                 exportLocation = Path.GetFullPath(paths[0]).TrimEnd('\\');
-                Console.WriteLine("Export location is " + exportLocation + (fullExport ? " (full export)" : " (incremental export)") + ", batch size " + batchSize);
-                if (fullExport) RemoveDirectory(exportLocation);
+                Console.WriteLine("Export location is " + exportLocation + (incrementalExport ? " (incremental export)" : " (full export)") + ", batch size " + batchSize);
+                if (!incrementalExport) RemoveDirectory(exportLocation);
                 CheckDirectory(exportLocation);
                 var watch = new System.Diagnostics.Stopwatch();
                 watch.Start();
@@ -608,8 +621,7 @@ namespace TiaExportBlocks
                                 }
                             }
                         }
-                        int removed = 0;
-                        foreach (string prefix in plcPrefixes) removed += RemoveStaleFiles(prefix);
+                        int removed = incrementalExport ? RemoveStaleFiles(plcPrefixes) : 0;
                         SaveState(projectPath);
                         Console.WriteLine("Exported " + exportedCount + ", unchanged " + skippedCount + ", removed " + removed);
                     }

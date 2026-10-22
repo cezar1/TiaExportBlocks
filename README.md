@@ -8,9 +8,9 @@ This application connects to the TIA portal (if there is one active) and then to
 
 The export location must be specified as an input argument otherwise the program will not run.
 
-By default the export is incremental: only blocks, types and tag tables whose modification date in TIA changed since the last export (or whose file changed or is missing) are exported again, and files of elements no longer in the project are removed. The state is kept in `%LOCALAPPDATA%\TiaExportBlocks`, outside the export location. Add `--full` to delete the export location and export everything, as before:
+By default the export location is deleted and everything is exported, as before. Add `--incremental` to keep the location and export again only the blocks and types whose modification date in TIA changed since the last export (or whose file changed or is missing); tag tables and text lists are always exported. Afterwards the files of elements no longer in the project are deleted (PLC `scl`, `db`, `stl`, `udt`, `tag_tables\xml`, `hmi_tag_tables\xml`, `hmi_text_lists\xml`), so no stale files remain. The state is kept in `%LOCALAPPDATA%\TiaExportBlocks`, outside the export location.
 
-    TiaExportBlocks.exe C:\Test [--full] [--batch N]
+    TiaExportBlocks.exe C:\Test [--incremental] [--batch N]
 
 Blocks and types are generated in batches of N per Openness call (default 50) and split back into one file per block, which is much faster than one call per block. A batch that fails or does not split into exactly its blocks is exported block by block. `--batch 1` exports block by block as before.
 
