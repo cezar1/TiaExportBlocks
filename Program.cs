@@ -89,10 +89,11 @@ namespace TiaExportBlocks
 
         // Batch export: each Openness GenerateSource call costs about the same
         // whether it carries one block or many, so blocks are generated in
-        // batches (--batch N, default 50) into one file and split back into the
-        // usual one-file-per-block layout. A batch that fails or does not split
-        // into exactly its blocks is exported block by block instead.
-        static int batchSize = 50;
+        // batches (opt-in --batch N) into one file and split back into the usual
+        // one-file-per-block layout. A batch that fails or does not split into
+        // exactly its blocks is exported block by block instead. The default (1)
+        // is the original one call per block.
+        static int batchSize = 1;
         static Dictionary<string, List<KeyValuePair<PlcBlock, string>>> pendingBlocks = new Dictionary<string, List<KeyValuePair<PlcBlock, string>>>();
         static List<KeyValuePair<PlcType, string>> pendingTypes = new List<KeyValuePair<PlcType, string>>();
         static Regex blockStart = new Regex(@"^(FUNCTION_BLOCK|FUNCTION|ORGANIZATION_BLOCK|DATA_BLOCK|TYPE)\s+""([^""]+)""");

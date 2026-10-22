@@ -12,7 +12,7 @@ By default the export location is deleted and everything is exported, as before.
 
     TiaExportBlocks.exe C:\Test [--incremental] [--batch N]
 
-Blocks and types are generated in batches of N per Openness call (default 50) and split back into one file per block, which is much faster than one call per block. A batch that fails or does not split into exactly its blocks is exported block by block. `--batch 1` exports block by block as before.
+By default blocks and types are exported one Openness call per block, as before. Add `--batch N` (e.g. 50) to generate N blocks per call and split them back into one file per block, which is much faster. A batch that fails or does not split into exactly its blocks is exported block by block. Both `--incremental` and `--batch` are opt-in; without them the tool behaves exactly as before.
 
 Additional comments:
 + If there are multiple projects in TIA portal instances opened, all the elements will be exported in same location - with overwriting based on whichever is the last element processed.
