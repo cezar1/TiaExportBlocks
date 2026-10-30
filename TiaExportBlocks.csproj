@@ -28,6 +28,8 @@
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
     <TargetFrameworkProfile />
+    <!-- TIA Openness API folder under dll\ (V15_1, V16, ...). Override with /p:TiaVersion=V16 -->
+    <TiaVersion Condition=" '$(TiaVersion)' == '' ">V15_1</TiaVersion>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -64,7 +66,7 @@
   <ItemGroup>
     <Reference Include="Siemens.Engineering, Version=15.1.0.0, Culture=neutral, PublicKeyToken=d29ec89bac048f84, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>dll\V15_1\Siemens.Engineering.dll</HintPath>
+      <HintPath>dll\$(TiaVersion)\Siemens.Engineering.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
