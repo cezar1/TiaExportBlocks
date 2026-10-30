@@ -17,7 +17,10 @@ namespace TiaExportBlocks.Tests
 
         public void Dispose()
         {
-            if (Directory.Exists(_root)) Directory.Delete(_root, true);
+            // Junction-safe: removes links without following them (Directory.Delete(recursive) can fail on them).
+            if (!Directory.Exists(_root)) return;
+            FileOps.WipeDirectoryContents(_root, attempts: 3, retryDelayMs: 50);
+            Directory.Delete(_root, false);
         }
 
         private string In(params string[] parts)
