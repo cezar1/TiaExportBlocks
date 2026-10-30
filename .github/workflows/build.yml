@@ -32,7 +32,32 @@ jobs:
 
       # Unit tests need neither the Siemens DLL nor TIA Portal, so they run first.
       - name: Unit tests
-        run: dotnet test tests/TiaExportBlocks.Tests/TiaExportBlocks.Tests.csproj -c Release --logger "console;verbosity=normal" --logger "trx;LogFileName=unit-tests.trx" --logger GitHubActions --results-directory TestResults
+        shell: pwsh
+        run: |
+          dotnet test tests/TiaExportBlocks.Tests/TiaExportBlocks.Tests.csproj -c Release --logger "console;verbosity=normal" --logger "trx;LogFileName=unit-tests.trx" --logger GitHubActions --results-directory TestResults 2>&1 | Tee-Object -FilePath test-output.log
+          exit $LASTEXITCODE
+
+      # Makes failures readable through the checks API (annotations), also when the test run aborts or does not build.
+      - name: Report test failures
+        if: failure()
+        shell: pwsh
+        run: |
+          $trx = Get-ChildItem TestResults -Filter *.trx -ErrorAction SilentlyContinue | Select-Object -First 1
+          $reported = 0
+          if ($trx) {
+            [xml]$x = Get-Content $trx.FullName
+            $ns = @{ t = 'http://microsoft.com/schemas/VisualStudio/TeamTest/2010' }
+            foreach ($r in (Select-Xml -Xml $x -XPath "//t:UnitTestResult[@outcome='Failed']" -Namespace $ns | Select-Object -First 8)) {
+              $msg = ($r.Node.Output.ErrorInfo.Message + ' ' + $r.Node.Output.ErrorInfo.StackTrace) -replace "`r?`n", ' | '
+              if ($msg.Length -gt 900) { $msg = $msg.Substring(0, 900) }
+              Write-Output "::error title=$($r.Node.testName)::$msg"
+              $reported++
+            }
+          }
+          if ($reported -eq 0 -and (Test-Path test-output.log)) {
+            $lines = Get-Content test-output.log | Where-Object { $_ -match 'error|Error|aborted|crash|Exception|Failed|failed' } | Select-Object -Last 8
+            foreach ($l in $lines) { Write-Output "::error title=dotnet test::$($l.Substring(0, [Math]::Min(900, $l.Length)))" }
+          }
 
       - name: Upload test results
         if: always()
