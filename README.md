@@ -27,7 +27,7 @@ Because `Siemens.Engineering.dll` is not in this repo, the workflow downloads it
 
 # Usage
 
-    TiaExportBlocks.exe C:\Test [--incremental] [--batch N] [--benchmark [--benchmark-csv file.csv]]
+    TiaExportBlocks.exe C:\Test [--incremental] [--batch N] [--benchmark [--benchmark-csv file.csv]] [--pause-at-end]
 
 Without options: full export. The export location is emptied and everything is exported, one block per Openness call.
 
@@ -42,11 +42,15 @@ Keeps the export location and generates a block or UDT again only when needed. A
 - TIA reports the same `ModifiedDate` as at its last successful export
 - its file still has exactly the content written then (SHA-256; write times are ignored, so sync tools or git checkouts that only touch files don't cause re-exports)
 - no block, UDT or tag table of that PLC was added, removed or renamed since the last export
-- none of that PLC's tag tables changed (a renamed tag changes the source of blocks whose own `ModifiedDate` does not change)
+- none of that PLC's tag tables changed (a renamed tag changes the source of blocks whose own `ModifiedDate` does not change). Tag tables are compared without their `<DocumentInfo>` header, which only holds the export time.
 
-Tag tables and HMI tag tables/text lists are always exported. A failed export keeps the previous file and is retried on the next run. Afterwards the tool deletes the files it exported earlier whose element is gone (deleted or renamed blocks, UDTs, tag tables, text lists, removed or renamed PLCs/HMIs), and folders left empty. It never deletes files it did not write (README, `.git`, hand-written files) or files another project in the same export location also wrote. If part of a project cannot be read from TIA, nothing is deleted in that run.
+Tag tables and HMI tag tables/text lists are always exported, but an existing XML file is only replaced when its content changed (ignoring the export time), so unchanged files keep their date and show no diff in git. The log says per PLC how many blocks/types are exported and, when all of them are, why (which elements were added/removed, which tag tables changed). A failed export keeps the previous file and is retried on the next run. Afterwards the tool deletes the files it exported earlier whose element is gone (deleted or renamed blocks, UDTs, tag tables, text lists, removed or renamed PLCs/HMIs), and folders left empty. It never deletes files it did not write (README, `.git`, hand-written files) or files another project in the same export location also wrote. If part of a project cannot be read from TIA, nothing is deleted in that run.
 
 State is kept per export location and per project in `%LOCALAPPDATA%\TiaExportBlocks`, outside the export location. A missing or unreadable state simply means everything is exported. Changes that alter generated sources without changing any of the above (e.g. switching the project's editing language) are not detected; run a full export occasionally.
+
+## --pause-at-end
+
+Waits for Enter before the program exits, also after an error, so the output stays readable when the tool is started from a shortcut, a double-click or a TIA Portal external tool entry. Ignored when input is redirected (scripts, CI).
 
 ## --benchmark
 
@@ -70,7 +74,7 @@ Benchmark: total 47.3 s
 
 Every full (non-incremental) run starts by deleting **everything** inside the export location (the folder itself is kept): read-only, hidden and system files included, files locked by another program retried for about a second. Links (junctions/symlinks) inside it are removed without touching what they point to. If anything still cannot be deleted, the tool stops with exit code 1 and lists the files, without exporting anything. After the export, anything in the export location that the run did not write itself is removed too. The export location therefore always holds exactly the current project state. Drive and share roots (`C:\`, `\\server\share`) are refused as export location.
 
-Exit codes: 0 done, 1 export location could not be emptied, 2 invalid arguments.
+Exit codes: 0 done, 1 export location could not be emptied, 2 invalid arguments, 3 unexpected error.
 
 # Export layout
 

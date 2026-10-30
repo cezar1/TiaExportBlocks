@@ -396,7 +396,8 @@ namespace TiaExportBlocks
 
             // Tag tables first: they are always exported, and a change in them (e.g. a renamed tag)
             // changes the source text of blocks whose own ModifiedDate stays the same.
-            bool tagTablesChanged = ExportPlcTagTables(software.TagTableGroup, rootPrefix);
+            var changedTagTables = new List<string>();
+            ExportPlcTagTables(software.TagTableGroup, rootPrefix, changedTagTables);
 
             var types = CollectTypes(software, rootPrefix);
             var blocks = new List<Pending<IPlcBlock>>();
@@ -412,21 +413,47 @@ namespace TiaExportBlocks
                 currentNames.UnionWith(blocks.Select(b => b.TargetPath));
                 if (!previousNames.SetEquals(currentNames))
                 {
-                    _log.WriteLine("Blocks, types or tag tables of " + rootPrefix + " were added, removed or renamed since the last export: exporting all its blocks and types");
+                    var added = currentNames.Except(previousNames).Select(Path.GetFileName).ToList();
+                    var removed = previousNames.Except(currentNames).Select(Path.GetFileName).ToList();
+                    _log.WriteLine("Incremental: blocks, types or tag tables of " + rootPrefix + " were added, removed or renamed since the last export"
+                        + Describe(" (new: ", added) + Describe(" (gone: ", removed) + ": exporting all its blocks and types");
                     exportAll = true;
                 }
-                else if (tagTablesChanged)
+                else if (changedTagTables.Count > 0)
                 {
-                    _log.WriteLine("Tag tables of " + rootPrefix + " changed since the last export: exporting all its blocks and types");
+                    _log.WriteLine("Incremental: tag tables of " + rootPrefix + " changed since the last export" + Describe(" (", changedTagTables)
+                        + ": exporting all its blocks and types (tag names in their sources may have changed)");
                     exportAll = true;
                 }
             }
 
-            ExportSources(types.Where(t => exportAll || NeedsExport(t)).ToList(), (list, file) => software.GenerateSource(list, file));
-            foreach (var byExtension in blocks.GroupBy(b => b.Extension))
+            int candidates = types.Count + blocks.Count;
+            int unchangedBefore = _summary.Unchanged;
+            var typesToExport = types.Where(t => exportAll || NeedsExport(t)).ToList();
+            var blocksToExport = blocks.GroupBy(b => b.Extension).Select(g => g.Where(b => exportAll || NeedsExport(b)).ToList()).ToList();
+            if (Incremental)
             {
-                ExportSources(byExtension.Where(b => exportAll || NeedsExport(b)).ToList(), (list, file) => software.GenerateSource(list, file));
+                int toExport = typesToExport.Count + blocksToExport.Sum(g => g.Count);
+                _log.WriteLine("Incremental: " + rootPrefix + ": " + toExport + " of " + candidates + " blocks/types to export, "
+                    + (_summary.Unchanged - unchangedBefore) + " unchanged");
+                int noStamp = types.Count(t => t.Stamp == StateEntry.NoStamp) + blocks.Count(b => b.Stamp == StateEntry.NoStamp);
+                if (noStamp > 0)
+                {
+                    _log.WriteLine("Incremental: " + noStamp + " blocks/types of " + rootPrefix + " have no readable ModifiedDate and are always exported");
+                }
             }
+
+            ExportSources(typesToExport, (list, file) => software.GenerateSource(list, file));
+            foreach (var group in blocksToExport)
+            {
+                ExportSources(group, (list, file) => software.GenerateSource(list, file));
+            }
+        }
+
+        private static string Describe(string prefix, List<string> names)
+        {
+            if (names.Count == 0) return "";
+            return prefix + string.Join(", ", names.Take(5)) + (names.Count > 5 ? ", +" + (names.Count - 5) + " more" : "") + ")";
         }
 
         private string PlcFolder(string rootPrefix)
@@ -663,18 +690,19 @@ namespace TiaExportBlocks
         }
 
         /// <summary>Exports all PLC tag tables. Returns true if any of them is new, failed, or differs from the last export.</summary>
-        private bool ExportPlcTagTables(IPlcTagTableGroup group, string rootPrefix)
+        private void ExportPlcTagTables(IPlcTagTableGroup group, string rootPrefix, List<string> changed)
         {
-            bool changed = false;
             foreach (IExportableItem table in group.TagTables)
             {
-                changed |= ExportXml(table, ExportPaths.PlcTagTableFile(_exportLocation, rootPrefix, table.Name));
+                if (ExportXml(table, ExportPaths.PlcTagTableFile(_exportLocation, rootPrefix, table.Name)))
+                {
+                    changed.Add(table.Name);
+                }
             }
             foreach (IPlcTagTableGroup userGroup in group.Groups)
             {
-                changed |= ExportPlcTagTables(userGroup, rootPrefix);
+                ExportPlcTagTables(userGroup, rootPrefix, changed);
             }
-            return changed;
         }
 
         // ---------------- HMI ----------------
@@ -716,7 +744,12 @@ namespace TiaExportBlocks
             }
         }
 
-        /// <summary>Exports an XML element (always, no stamp). Returns true if the content is new, failed, or differs from the last export.</summary>
+        /// <summary>
+        /// Exports an XML element (always; XML exports have no stamp) into the scratch folder and compares it with
+        /// the file already in place, ignoring the &lt;DocumentInfo&gt; header (export time). An unchanged file is
+        /// left untouched, so its date and content stay stable for git and sync tools.
+        /// Returns true if the content is new, changed, failed, or differs from the last export.
+        /// </summary>
         private bool ExportXml(IExportableItem item, string path)
         {
             string target = Path.GetFullPath(path);
@@ -729,11 +762,24 @@ namespace TiaExportBlocks
                 {
                     item.Export(new FileInfo(temp));
                 }
-                _log.WriteLine(item.Name + " to " + target);
-                FileOps.MoveReplacing(temp, target);
-                RecordSuccess(target, StateEntry.NoStamp);
+                string hash = FileOps.XmlContentHash(temp);
+                if (File.Exists(target) && FileOps.XmlContentHash(target) == hash)
+                {
+                    FileOps.DeleteIfExists(temp);
+                    _current[target] = new StateEntry(StateEntry.NoStamp, hash);
+                    _written.Add(target);
+                    _summary.Unchanged++;
+                }
+                else
+                {
+                    _log.WriteLine(item.Name + " to " + target);
+                    FileOps.MoveReplacing(temp, target);
+                    _current[target] = new StateEntry(StateEntry.NoStamp, hash);
+                    _written.Add(target);
+                    _summary.Exported++;
+                }
                 StateEntry previous;
-                return !_previous.TryGetValue(target, out previous) || previous.Hash != _current[target].Hash;
+                return !_previous.TryGetValue(target, out previous) || previous.Hash != hash;
             }
             catch (Exception exc)
             {

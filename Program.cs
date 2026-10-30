@@ -4,10 +4,33 @@ namespace TiaExportBlocks
 {
     class Program
     {
-        /// <returns>0 done, 1 export location could not be emptied, 2 invalid arguments.</returns>
+        /// <returns>0 done, 1 export location could not be emptied, 2 invalid arguments, 3 unexpected error.</returns>
         static int Main(string[] args)
         {
-            CommandLineOptions options;
+            CommandLineOptions options = null;
+            int exitCode;
+            try
+            {
+                exitCode = Execute(args, out options);
+            }
+            catch (Exception exc)
+            {
+                Console.WriteLine("ERROR: " + exc);
+                exitCode = 3;
+            }
+
+            bool pause = options != null ? options.PauseAtEnd : CommandLineOptions.WantsPause(args);
+            if (pause && !Console.IsInputRedirected)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Finished with exit code " + exitCode + ". Press Enter to close...");
+                Console.ReadLine();
+            }
+            return exitCode;
+        }
+
+        private static int Execute(string[] args, out CommandLineOptions options)
+        {
             string error;
             if (!CommandLineOptions.TryParse(args, out options, out error))
             {

@@ -236,6 +236,48 @@ namespace TiaExportBlocks.Tests
             Assert.Equal(bytes, File.ReadAllBytes(dst));
         }
 
+        // ---- XmlContentHash ----
+
+        private const string XmlBody = "  <SW.Tags.PlcTagTable ID=\"0\">\r\n    <AttributeList><Name>Tags</Name></AttributeList>\r\n  </SW.Tags.PlcTagTable>\r\n</Document>";
+
+        private static string Xml(string created, string body)
+        {
+            return "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<Document>\r\n  <Engineering version=\"V15.1\" />\r\n"
+                + "  <DocumentInfo>\r\n    <Created>" + created + "</Created>\r\n    <ExportSetting>WithDefaults</ExportSetting>\r\n"
+                + "    <InstalledProducts><Product><DisplayName>STEP 7</DisplayName></Product></InstalledProducts>\r\n  </DocumentInfo>\r\n" + body;
+        }
+
+        [Fact]
+        public void XmlContentHash_IgnoresTheExportTimeHeader()
+        {
+            File.WriteAllText(In("a.xml"), Xml("2026-10-30T10:00:00.0000000Z", XmlBody));
+            File.WriteAllText(In("b.xml"), Xml("2026-10-30T22:27:13.1234567Z", XmlBody));
+
+            Assert.Equal(FileOps.XmlContentHash(In("a.xml")), FileOps.XmlContentHash(In("b.xml")));
+            Assert.NotEqual(FileOps.Sha256(In("a.xml")), FileOps.Sha256(In("b.xml")));
+        }
+
+        [Fact]
+        public void XmlContentHash_SeesRealChanges()
+        {
+            File.WriteAllText(In("a.xml"), Xml("2026-10-30T10:00:00Z", XmlBody));
+            File.WriteAllText(In("b.xml"), Xml("2026-10-30T10:00:00Z", XmlBody.Replace("<Name>Tags</Name>", "<Name>Tags2</Name>")));
+
+            Assert.NotEqual(FileOps.XmlContentHash(In("a.xml")), FileOps.XmlContentHash(In("b.xml")));
+        }
+
+        [Fact]
+        public void XmlContentHash_IgnoresBom_AndHandlesFilesWithoutHeader()
+        {
+            File.WriteAllText(In("bom.xml"), Xml("x", XmlBody), new System.Text.UTF8Encoding(true));
+            File.WriteAllText(In("nobom.xml"), Xml("y", XmlBody), new System.Text.UTF8Encoding(false));
+            File.WriteAllText(In("plain.xml"), "<Document/>");
+
+            Assert.Equal(FileOps.XmlContentHash(In("bom.xml")), FileOps.XmlContentHash(In("nobom.xml")));
+            Assert.NotNull(FileOps.XmlContentHash(In("plain.xml")));
+            Assert.Null(FileOps.XmlContentHash(In("missing.xml")));
+        }
+
         // ---- WipeDirectoryContents ----
 
         [Fact]
