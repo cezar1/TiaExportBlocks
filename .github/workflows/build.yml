@@ -30,6 +30,18 @@ jobs:
         with:
           persist-credentials: false   # nothing to clean up afterwards
 
+      # Unit tests need neither the Siemens DLL nor TIA Portal, so they run first.
+      - name: Unit tests
+        run: dotnet test tests/TiaExportBlocks.Tests/TiaExportBlocks.Tests.csproj -c Release --logger "console;verbosity=normal" --logger "trx;LogFileName=unit-tests.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
       - uses: microsoft/setup-msbuild@v2
 
       # Siemens.Engineering.dll is proprietary and not committed here. It lives in the private
