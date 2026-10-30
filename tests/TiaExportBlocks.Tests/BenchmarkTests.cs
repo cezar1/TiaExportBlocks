@@ -48,14 +48,16 @@ namespace TiaExportBlocks.Tests
         {
             var b = new Benchmark(_clock);
 
-            Assert.Throws<InvalidOperationException>(() =>
+            Action failingCall = () =>
             {
                 using (b.Measure(Benchmark.ExportXml, 1))
                 {
                     _clock.Advance(S(2));
                     throw new InvalidOperationException();
                 }
-            });
+            };
+
+            Assert.Throws<InvalidOperationException>(failingCall);
 
             Assert.Equal(S(2), b[Benchmark.ExportXml].Time);
             Assert.Equal(1, b[Benchmark.ExportXml].Calls);
