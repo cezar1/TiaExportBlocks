@@ -15,36 +15,42 @@ on:
 permissions:
   contents: write   # needed to attach the exe to a GitHub Release on tag pushes
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       TIA_VERSION: ${{ github.event.inputs.tia_version || 'V15_1' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # nothing to clean up afterwards
 
       - uses: microsoft/setup-msbuild@v2
 
       # Siemens.Engineering.dll is proprietary and not committed here. It lives in the private
-      # repo cezar1/siemens_tia_engineering_dlls, read with a fine-grained PAT stored as secret TIA_DLLS_TOKEN.
-      # Layout: <version, lowercase>/Siemens.Engineering.dll, e.g. v15_1/, v16/
-      - name: Checkout Siemens DLLs (private)
-        uses: actions/checkout@v4
-        with:
-          repository: cezar1/siemens_tia_engineering_dlls
-          token: ${{ secrets.TIA_DLLS_TOKEN }}
-          path: tia-dlls
-          lfs: true
-
-      - name: Place Siemens.Engineering.dll
+      # repo cezar1/siemens_tia_engineering_dlls as <version, lowercase>/Siemens.Engineering.dll
+      # (e.g. v15_1/, v16/) and is downloaded via the REST API with a fine-grained PAT
+      # (read-only Contents on that repo) stored as secret TIA_DLLS_TOKEN.
+      - name: Download Siemens.Engineering.dll
         shell: pwsh
+        env:
+          TIA_DLLS_TOKEN: ${{ secrets.TIA_DLLS_TOKEN }}
         run: |
-          $src = "tia-dlls/$($env:TIA_VERSION.ToLower())/Siemens.Engineering.dll"
-          if (-not (Test-Path $src)) { Write-Error "No Siemens.Engineering.dll found for $env:TIA_VERSION in siemens_tia_engineering_dlls"; exit 1 }
+          if (-not $env:TIA_DLLS_TOKEN) { Write-Error "Secret TIA_DLLS_TOKEN is not set."; exit 1 }
+          $path = "$($env:TIA_VERSION.ToLower())/Siemens.Engineering.dll"
           $dest = "dll/$env:TIA_VERSION/Siemens.Engineering.dll"
           New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-          Copy-Item $src $dest
-          Remove-Item -Recurse -Force tia-dlls
+          $headers = @{
+            Authorization          = "Bearer $env:TIA_DLLS_TOKEN"
+            Accept                 = "application/vnd.github.raw"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          Invoke-WebRequest -Uri "https://api.github.com/repos/cezar1/siemens_tia_engineering_dlls/contents/$path" -Headers $headers -OutFile $dest
           Get-Item $dest | Select-Object Name, Length, @{n='Version';e={$_.VersionInfo.FileVersion}}
 
       - name: Build (Release)
