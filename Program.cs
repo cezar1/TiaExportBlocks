@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Siemens.Engineering;
 using Siemens.Engineering.Hmi;
@@ -24,9 +25,183 @@ namespace TiaExportBlocks
         static Dictionary<string, string> programLanguageToExtension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" }, { "STL", ".awl" }};
         static Dictionary<string, string> programLanguageToFolderPrefixExtension = new Dictionary<string, string> { { "SCL", @"\scl\" }, { "DB", @"\db\" }, { "STL", @"\stl\" } };
         static string exportLocation;
+        // Default: wipe the export location and export everything. --incremental
+        // (opt-in) keeps the location, exports a block or type again only when its
+        // TIA modification stamp differs from the last export or its file is
+        // missing, and then deletes the files that no longer have a TIA element.
+        static bool incrementalExport;
+        static Dictionary<string, long> previousStamps = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        // File write times at the last export: a file changed on disk since (e.g. a
+        // git branch switch) is exported again even if TIA reports no change.
+        static Dictionary<string, long> previousWrites = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        static Dictionary<string, long> currentStamps = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        static HashSet<string> expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        static int exportedCount;
+        static int skippedCount;
+
+        // The TIA modification stamp of a block, type or tag table, or -1 when
+        // it cannot be read (then the element is always exported).
+        static long ModifiedStamp(IEngineeringObject obj)
+        {
+            try
+            {
+                object value = obj.GetAttribute("ModifiedDate");
+                if (value is DateTime) return ((DateTime)value).Ticks;
+            }
+            catch (Exception)
+            {
+            }
+            return -1;
+        }
+
+        // True when the element at targetPath must be exported again.
+        static bool NeedsExport(string targetPath, long stamp)
+        {
+            expectedFiles.Add(targetPath);
+            currentStamps[targetPath] = stamp;
+            if (!incrementalExport || stamp < 0 || !File.Exists(targetPath)) return true;
+            long previous;
+            long previousWrite;
+            if (previousStamps.TryGetValue(targetPath, out previous) && previous == stamp
+                && previousWrites.TryGetValue(targetPath, out previousWrite)
+                && previousWrite == File.GetLastWriteTimeUtc(targetPath).Ticks)
+            {
+                skippedCount++;
+                return false;
+            }
+            return true;
+        }
+
+        // Openness writes into the local temp folder; the result is then copied
+        // to the (possibly shared) export location in one step.
+        static string LocalTempFile(string name)
+        {
+            return Path.Combine(Path.GetTempPath(), "TiaExportBlocks_" + Guid.NewGuid().ToString("N") + "_" + name);
+        }
+
+        static void PlaceFile(string tempPath, string targetPath)
+        {
+            EnsureDirectoryExists(targetPath);
+            File.Copy(tempPath, targetPath, true);
+            File.Delete(tempPath);
+            exportedCount++;
+        }
+
+        // Batch export: each Openness GenerateSource call costs about the same
+        // whether it carries one block or many, so blocks are generated in
+        // batches (opt-in --batch N) into one file and split back into the usual
+        // one-file-per-block layout. A batch that fails or does not split into
+        // exactly its blocks is exported block by block instead. The default (1)
+        // is the original one call per block.
+        static int batchSize = 1;
+        static Dictionary<string, List<KeyValuePair<PlcBlock, string>>> pendingBlocks = new Dictionary<string, List<KeyValuePair<PlcBlock, string>>>();
+        static List<KeyValuePair<PlcType, string>> pendingTypes = new List<KeyValuePair<PlcType, string>>();
+        static Regex blockStart = new Regex(@"^(FUNCTION_BLOCK|FUNCTION|ORGANIZATION_BLOCK|DATA_BLOCK|TYPE)\s+""([^""]+)""");
+        static UTF8Encoding utf8WithBom = new UTF8Encoding(true);
+
+        // Splits a generated source into its top-level blocks, each as written by a
+        // single-block export: the block's lines, its END_ line and one empty line.
+        static Dictionary<string, string> SplitSource(string text)
+        {
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            List<string> current = null;
+            string name = null;
+            string endKeyword = null;
+            foreach (string line in lines)
+            {
+                if (current == null)
+                {
+                    Match m = blockStart.Match(line);
+                    if (!m.Success) continue;
+                    current = new List<string>();
+                    name = m.Groups[2].Value;
+                    endKeyword = "END_" + m.Groups[1].Value;
+                }
+                current.Add(line);
+                if (line.TrimEnd() == endKeyword)
+                {
+                    result[name] = string.Join("\r\n", current) + "\r\n\r\n";
+                    current = null;
+                }
+            }
+            return result;
+        }
+
+        static void ExportBatched<T>(List<KeyValuePair<T, string>> items, string extension, Func<T, string> nameOf, Action<List<T>, FileInfo> generate)
+        {
+            for (int start = 0; start < items.Count; start += batchSize)
+            {
+                var batch = items.Skip(start).Take(batchSize).ToList();
+                bool done = false;
+                if (batch.Count > 1)
+                {
+                    var temp = new FileInfo(LocalTempFile("batch" + extension));
+                    try
+                    {
+                        Console.WriteLine("Generating " + batch.Count + " " + extension + " blocks in one batch");
+                        generate(batch.Select(b => b.Key).ToList(), temp);
+                        var parts = SplitSource(File.ReadAllText(temp.FullName, Encoding.UTF8));
+                        if (parts.Count == batch.Count && batch.All(b => parts.ContainsKey(nameOf(b.Key))))
+                        {
+                            foreach (var b in batch)
+                            {
+                                EnsureDirectoryExists(b.Value);
+                                File.WriteAllText(b.Value, parts[nameOf(b.Key)], utf8WithBom);
+                                exportedCount++;
+                            }
+                            done = true;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Batch did not split into its " + batch.Count + " blocks (" + parts.Count + " found): exporting them one by one");
+                        }
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.WriteLine("Batch export failed (" + exc.Message + "): exporting its blocks one by one");
+                    }
+                    finally
+                    {
+                        if (File.Exists(temp.FullName)) File.Delete(temp.FullName);
+                    }
+                }
+                if (done) continue;
+                foreach (var b in batch)
+                {
+                    var temp = new FileInfo(LocalTempFile(MakeValidFileName(nameOf(b.Key)) + extension));
+                    try
+                    {
+                        Console.WriteLine("Block [" + nameOf(b.Key) + "] to " + b.Value);
+                        generate(new List<T>() { b.Key }, temp);
+                        PlaceFile(temp.FullName, b.Value);
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.WriteLine(exc.ToString());
+                    }
+                }
+            }
+        }
+
+        static void FlushBlocks(PlcSoftware software)
+        {
+            PlcExternalSourceSystemGroup group = software.ExternalSourceGroup;
+            foreach (var entry in pendingBlocks)
+            {
+                ExportBatched(entry.Value, entry.Key, b => b.Name, (list, file) => group.GenerateSource(list, file, GenerateOptions.None));
+            }
+            pendingBlocks.Clear();
+        }
+
+        static void FlushTypes(PlcSoftware software)
+        {
+            PlcExternalSourceSystemGroup group = software.ExternalSourceGroup;
+            ExportBatched(pendingTypes, ".udt", t => t.Name, (list, file) => group.GenerateSource(list, file, GenerateOptions.None));
+            pendingTypes.Clear();
+        }
         static void HandleBlock(PlcBlock block,PlcSoftware software, string currentPath, string rootPrefix)
         {
-            PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             //Console.WriteLine(block.Name + " " + block.GetType()+ " " +block.ProgrammingLanguage);
             string block_programming_language=block.ProgrammingLanguage.ToString();
             if (programLanguageToExtension.ContainsKey(block_programming_language))
@@ -43,25 +218,14 @@ namespace TiaExportBlocks
                 }
                 string sanitizedCurrentPath= Path.Combine(folderStructure);
                 var fileInfo = new FileInfo(exportLocation+@"\"+ rootPrefix+@"\"+Path.Combine(folder_prefix, sanitizedCurrentPath, MakeValidFileName(block.Name)+ extension));
-                var fileInfoTemp = new FileInfo(exportLocation + MakeValidFileName(block.Name) + extension);
-                //var fileInfo = new FileInfo(exportLocation + folder_prefix+ '\\' + sanitizedFolderPrefix + '\\' +MakeValidFileName(block.Name) + extension);
-                if (!fileInfo.Directory.Exists)
+                if (!NeedsExport(fileInfo.FullName, ModifiedStamp(block))) return;
+                List<KeyValuePair<PlcBlock, string>> queue;
+                if (!pendingBlocks.TryGetValue(extension, out queue))
                 {
-                    Console.WriteLine("Creating [" + fileInfo.FullName + "]");
-                    Directory.CreateDirectory(fileInfo.Directory.FullName);
+                    queue = new List<KeyValuePair<PlcBlock, string>>();
+                    pendingBlocks[extension] = queue;
                 }
-                var blocks = new List<PlcBlock>() { block };
-                try
-                {
-                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
-                    Console.WriteLine("RP ["+ rootPrefix + "] Block [" + block.Name + "] prefix [" + currentPath + "] to " + fileInfo.FullName);
-                    externalSourceGroup.GenerateSource(blocks, fileInfoTemp, GenerateOptions.None);
-                    File.Move(fileInfoTemp.FullName, fileInfo.FullName);
-                }
-                catch (Exception exc)
-                {
-                    Console.WriteLine(exc.ToString());
-                }
+                queue.Add(new KeyValuePair<PlcBlock, string>(block, fileInfo.FullName));
             }
             else
             {
@@ -105,27 +269,10 @@ namespace TiaExportBlocks
         }
         static void HandleType(PlcType plcType, PlcSoftware software,string rootPrefix)
         {
-            PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             string extension=".udt";
             var fileInfo = new FileInfo(exportLocation + @"\" + rootPrefix + @"\udt\" + plcType.Name + extension);
-            var blocks = new List<PlcType>() { plcType };
-            try
-            {
-                if (!fileInfo.Directory.Exists)
-                {
-                    Directory.CreateDirectory(fileInfo.Directory.FullName);
-                }
-                if (File.Exists(fileInfo.FullName))
-                {
-                    Console.WriteLine("Deleting " + fileInfo.FullName);
-                    File.Delete(fileInfo.FullName);
-                }
-                externalSourceGroup.GenerateSource(blocks, fileInfo, GenerateOptions.None);
-            }
-            catch (Exception exc)
-            {
-                Console.WriteLine(exc.ToString());
-            }
+            if (!NeedsExport(fileInfo.FullName, ModifiedStamp(plcType))) return;
+            pendingTypes.Add(new KeyValuePair<PlcType, string>(plcType, fileInfo.FullName));
 
         }
         private static void ExportAllTagTables(PlcSoftware plcSoftware, string rootPrefix)
@@ -145,6 +292,7 @@ namespace TiaExportBlocks
             Console.WriteLine(name);
             // Recursively handle block groups and blocks
             HandleBlockGroup(software.BlockGroup, software, string.Empty, rootPrefix);
+            FlushBlocks(software);
 
         }
         private static void ExportTypes(PlcSoftware software, string rootPrefix)
@@ -154,6 +302,7 @@ namespace TiaExportBlocks
                 Console.WriteLine("Handling type at prefix " + rootPrefix + " named "+ plcType.Name);
                 HandleType(plcType, software, rootPrefix);
             }
+            FlushTypes(software);
         }
         public static void EnsureDirectoryExists(string filePath)
         {
@@ -171,15 +320,14 @@ namespace TiaExportBlocks
             foreach (PlcTagTable table in tagTables)
             {
                 Console.WriteLine(table.Name);
-                var fileInfoTemp = new FileInfo(exportLocation +@"\"+ MakeValidFileName(table.Name) + ".xml");
-                if (File.Exists(fileInfoTemp.FullName)) File.Delete(fileInfoTemp.FullName);
-                table.Export(fileInfoTemp, ExportOptions.WithDefaults);
                 string filePath = exportLocation +@"\"+ rootPrefix+@"\tag_tables\xml\"  + @"\" + table.Name + ".xml";
                 var fileInfo = new FileInfo(filePath);
+                // Tag tables are few and also hold the user constants: always exported.
+                expectedFiles.Add(fileInfo.FullName);
+                var fileInfoTemp = new FileInfo(LocalTempFile(MakeValidFileName(table.Name) + ".xml"));
+                table.Export(fileInfoTemp, ExportOptions.WithDefaults);
                 Console.WriteLine(table.Name + " to " + fileInfo.FullName);
-                EnsureDirectoryExists(filePath);
-                if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
-                File.Move(fileInfoTemp.FullName, fileInfo.FullName);
+                PlaceFile(fileInfoTemp.FullName, fileInfo.FullName);
             }
         }
         private static void ExportUserGroupDeep(PlcTagTableUserGroup group, string rootPrefix)
@@ -217,6 +365,7 @@ namespace TiaExportBlocks
             {
                 string extension = ".xml";
                 var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                expectedFiles.Add(fileInfo.FullName);
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -236,6 +385,7 @@ namespace TiaExportBlocks
             {
                 string extension = ".xml";
                 var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                expectedFiles.Add(fileInfo.FullName);
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -256,6 +406,7 @@ namespace TiaExportBlocks
             {
                 string extension = ".xml";
                 var fileInfo = new FileInfo(exportLocation + @"\hmi_text_lists\xml\" + textList.Name + extension);
+                expectedFiles.Add(fileInfo.FullName);
                 try
                 {
                     if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
@@ -285,20 +436,117 @@ namespace TiaExportBlocks
                 Directory.CreateDirectory(path);
             }
         }                
+        // Kept outside the export location so it never ends up in a repository:
+        // %LOCALAPPDATA%\TiaExportBlocks\<hash of the export location>.state
+        static string StatePath()
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TiaExportBlocks");
+            Directory.CreateDirectory(dir);
+            using (var sha = System.Security.Cryptography.SHA1.Create())
+            {
+                byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(exportLocation.ToLowerInvariant()));
+                return Path.Combine(dir, BitConverter.ToString(hash).Replace("-", "").Substring(0, 16) + ".state");
+            }
+        }
+
+        // First line: the TIA project path; then "stamp<TAB>file write ticks<TAB>file" per element.
+        static void LoadState(string projectPath)
+        {
+            previousStamps.Clear();
+            previousWrites.Clear();
+            string path = StatePath();
+            if (!File.Exists(path)) return;
+            string[] lines = File.ReadAllLines(path);
+            if (lines.Length == 0 || !string.Equals(lines[0], projectPath, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Last export was of another project: exporting everything");
+                return;
+            }
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string[] parts = lines[i].Split('\t');
+                long stamp;
+                long written;
+                if (parts.Length == 3 && long.TryParse(parts[0], out stamp) && long.TryParse(parts[1], out written))
+                {
+                    previousStamps[parts[2]] = stamp;
+                    previousWrites[parts[2]] = written;
+                }
+            }
+        }
+
+        static void SaveState(string projectPath)
+        {
+            var lines = new List<string>() { projectPath };
+            foreach (var entry in currentStamps)
+            {
+                long written = File.Exists(entry.Key) ? File.GetLastWriteTimeUtc(entry.Key).Ticks : -1;
+                lines.Add(entry.Value + "\t" + written + "\t" + entry.Key);
+            }
+            File.WriteAllLines(StatePath(), lines);
+        }
+
+        // Incremental cleanup: removes exported files whose block, type, tag table
+        // or text list is no longer in the project, then the folders left empty.
+        // Only the folders this tool writes are scanned.
+        static int RemoveStaleFiles(IEnumerable<string> plcPrefixes)
+        {
+            int removed = 0;
+            var dirs = new List<string>();
+            foreach (string prefix in plcPrefixes)
+                foreach (string sub in new[] { "scl", "db", "stl", "udt", @"tag_tables\xml" })
+                    dirs.Add(Path.Combine(exportLocation, prefix, sub));
+            dirs.Add(Path.Combine(exportLocation, @"hmi_tag_tables\xml"));
+            dirs.Add(Path.Combine(exportLocation, @"hmi_text_lists\xml"));
+            var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".scl", ".db", ".awl", ".udt", ".xml" };
+            foreach (string dir in dirs)
+            {
+                if (!Directory.Exists(dir)) continue;
+                foreach (string file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    if (!extensions.Contains(Path.GetExtension(file))) continue;
+                    if (expectedFiles.Contains(Path.GetFullPath(file))) continue;
+                    Console.WriteLine("Removing " + file + " (no longer in the project)");
+                    File.Delete(file);
+                    removed++;
+                }
+                foreach (string sub in Directory.GetDirectories(dir, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
+                {
+                    if (!Directory.EnumerateFileSystemEntries(sub).Any()) Directory.Delete(sub);
+                }
+            }
+            return removed;
+        }
+
             static void Main(string[] args)
         {
 
-            if (args == null || args.Length == 0 || args.Length>1)
+            incrementalExport = args != null && args.Any(a => string.Equals(a, "--incremental", StringComparison.OrdinalIgnoreCase));
+            var paths = new List<string>();
+            for (int i = 0; args != null && i < args.Length; i++)
+            {
+                int n;
+                if (string.Equals(args[i], "--batch", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && int.TryParse(args[i + 1], out n) && n > 0)
+                {
+                    batchSize = n;
+                    i++;
+                }
+                else if (!args[i].StartsWith("--"))
+                {
+                    paths.Add(args[i]);
+                }
+            }
+            if (paths.Count != 1)
             {
                 Console.WriteLine("No arguments provided");
-                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test");
+                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test [--incremental] [--batch N]");
                 Console.ReadLine();
             }
             else
             {
-                exportLocation = args[0];
-                Console.WriteLine("Export location is " + exportLocation);
-                RemoveDirectory(exportLocation);
+                exportLocation = Path.GetFullPath(paths[0]).TrimEnd('\\');
+                Console.WriteLine("Export location is " + exportLocation + (incrementalExport ? " (incremental export)" : " (full export)") + ", batch size " + batchSize);
+                if (!incrementalExport) RemoveDirectory(exportLocation);
                 CheckDirectory(exportLocation);
                 var watch = new System.Diagnostics.Stopwatch();
                 watch.Start();
@@ -322,6 +570,11 @@ namespace TiaExportBlocks
                     foreach (Project project in projects)
                     {
                         Console.WriteLine("Handling project " + project.Name);
+                        string projectPath = project.Path.FullName;
+                        LoadState(projectPath);
+                        currentStamps.Clear();
+                        expectedFiles.Clear();
+                        var plcPrefixes = new List<string>();
                         foreach (Siemens.Engineering.HW.Device device in project.Devices)
                         {
                             Console.WriteLine("Handling device " + device.Name + " of type [" + device.TypeIdentifier+"]");
@@ -339,6 +592,7 @@ namespace TiaExportBlocks
                                         if (softwareContainer != null)
                                         {
                                             PlcSoftware software = softwareContainer.Software as PlcSoftware;
+                                            plcPrefixes.Add(rootPrefix);
                                             ExportBlocks(software,rootPrefix);
                                             ExportTypes(software, rootPrefix);
                                             ExportAllTagTables(software, rootPrefix);
@@ -368,6 +622,9 @@ namespace TiaExportBlocks
                                 }
                             }
                         }
+                        int removed = incrementalExport ? RemoveStaleFiles(plcPrefixes) : 0;
+                        SaveState(projectPath);
+                        Console.WriteLine("Exported " + exportedCount + ", unchanged " + skippedCount + ", removed " + removed);
                     }
                 }
                 watch.Stop();
