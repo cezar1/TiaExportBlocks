@@ -342,8 +342,12 @@ namespace TiaExportBlocks.Tests.Fakes
             }
         }
 
+        /// <summary>Runs during GenerateSource, e.g. to simulate another program writing into the export folder.</summary>
+        public Action OnGenerate;
+
         public void GenerateSource(FileInfo target)
         {
+            if (OnGenerate != null) OnGenerate();
             if (!(ProgrammingLanguage == "SCL" || ProgrammingLanguage == "DB" || ProgrammingLanguage == "STL"))
             {
                 _tia.Record("GenerateSource " + Name + " -> " + target.FullName);

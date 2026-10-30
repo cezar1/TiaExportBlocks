@@ -87,7 +87,83 @@ namespace TiaExportBlocks.Tests
             Assert.True(Directory.Exists(_export));
             Assert.Empty(Directory.GetFileSystemEntries(_export));
             Assert.Contains("Deleting location " + _export + ".", Log);
-            Assert.Contains("Export location " + _export + " does not exist", Log);
+        }
+
+        [Fact]
+        public void PrepareExportLocation_RemovesReadOnlyHiddenAndSystemFiles()
+        {
+            string ro = Path.Combine(_export, "PLC_1", "scl", "ReadOnly.scl");
+            string hidden = Path.Combine(_export, "hidden.xml");
+            string system = Path.Combine(_export, "PLC_1", "udt", "sys.udt");
+            foreach (var f in new[] { ro, hidden, system })
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(f));
+                File.WriteAllText(f, "stale");
+            }
+            File.SetAttributes(ro, FileAttributes.ReadOnly);
+            File.SetAttributes(hidden, FileAttributes.Hidden);
+            File.SetAttributes(system, FileAttributes.System | FileAttributes.ReadOnly);
+            var roDir = new DirectoryInfo(Path.Combine(_export, "PLC_1"));
+            roDir.Attributes |= FileAttributes.ReadOnly;
+
+            NewExporter().PrepareExportLocation();
+
+            Assert.True(Directory.Exists(_export));
+            Assert.Empty(Directory.GetFileSystemEntries(_export));
+        }
+
+        [Fact]
+        public void PrepareExportLocation_LockedFile_ThrowsAndNamesIt()
+        {
+            string locked = Path.Combine(_export, "PLC_1", "scl", "Locked.scl");
+            Directory.CreateDirectory(Path.GetDirectoryName(locked));
+            File.WriteAllText(locked, "stale");
+
+            using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var exc = Assert.Throws<ExportLocationNotCleanException>(() => NewExporter().PrepareExportLocation());
+                Assert.Contains(locked, exc.Remaining);
+                Assert.Contains("nothing was exported", exc.Message);
+            }
+        }
+
+        [Fact]
+        public void Run_FilesAppearingDuringExport_AreRemovedAfterwards()
+        {
+            string stray = Path.Combine(_export, "stray.txt");
+            string strayScl = Path.Combine(_export, "PLC_1", "scl", "Old", "Removed.scl");
+            var block = _tia.Scl("Main");
+            block.OnGenerate = () =>
+            {
+                File.WriteAllText(stray, "x");
+                Directory.CreateDirectory(Path.GetDirectoryName(strayScl));
+                File.WriteAllText(strayScl, "x");
+                File.SetAttributes(strayScl, FileAttributes.ReadOnly);
+            };
+
+            Run(OneProject(_tia.S71500Station("S", "PLC_1", _tia.Plc("PLC_1").WithBlocks(block))));
+
+            Assert.Equal(new[] { @"PLC_1\scl\Program blocks\Main.scl" }, ExportedFiles());
+            Assert.False(Directory.Exists(Path.Combine(_export, "PLC_1", "scl", "Old")));
+            Assert.Contains("Removed " + stray + " (not written by this export)", Log);
+        }
+
+        [Fact]
+        public void Run_ExportLocationHoldsExactlyTheFilesWrittenThisRun()
+        {
+            var plc = _tia.Plc("PLC_1")
+                .WithBlocks(_tia.Scl("Main"), _tia.Db("DB1"), _tia.Scl("Broken").Failing("inconsistent", writePartialFile: true))
+                .WithTypes(_tia.Udt("UDT1"))
+                .WithTagTables(_tia.PlcTagTable("Tags"));
+            var hmi = _tia.Hmi("HMI_1").WithTagTables(_tia.HmiTagTable("T")).WithTextLists(_tia.TextList("L"));
+            var exporter = NewExporter();
+            exporter.PrepareExportLocation();
+
+            exporter.Run(new[] { OneProject(_tia.S71500Station("S", "PLC_1", plc), _tia.HmiStation("H", "HMI_1", hmi)) });
+
+            var onDisk = Directory.GetFiles(_export, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(exporter.WrittenFiles.OrderBy(f => f, StringComparer.OrdinalIgnoreCase), onDisk);
+            Assert.Equal(6, exporter.WrittenFiles.Count);
         }
 
         [Fact]

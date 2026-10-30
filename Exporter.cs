@@ -1,9 +1,24 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace TiaExportBlocks
 {
+    /// <summary>The export location could not be emptied; exporting on top of it could leave stale files.</summary>
+    public sealed class ExportLocationNotCleanException : IOException
+    {
+        public ExportLocationNotCleanException(string exportLocation, IList<string> remaining)
+            : base("Could not delete " + remaining.Count + " item(s) in " + exportLocation + " (in use or access denied); nothing was exported. "
+                + "Close programs using them (Explorer, editors, git tools) and run again:" + Environment.NewLine + "  "
+                + string.Join(Environment.NewLine + "  ", remaining.Take(20)) + (remaining.Count > 20 ? Environment.NewLine + "  ..." : ""))
+        {
+            Remaining = remaining;
+        }
+
+        public IList<string> Remaining { get; private set; }
+    }
+
     /// <summary>
     /// Walks TIA Portal instances / projects / devices and exports PLC blocks, UDTs, PLC tag tables,
     /// HMI tag tables and HMI text lists. Works on the <see cref="ITiaPortalProcess"/> abstraction so it
@@ -13,6 +28,7 @@ namespace TiaExportBlocks
     {
         private readonly string _exportLocation;
         private readonly TextWriter _log;
+        private readonly HashSet<string> _written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public Exporter(string exportLocation, TextWriter log)
         {
@@ -24,23 +40,83 @@ namespace TiaExportBlocks
 
         public string ExportLocation { get { return _exportLocation; } }
 
-        /// <summary>Deletes any previous export and recreates an empty export folder.</summary>
+        /// <summary>
+        /// Deletes everything inside the export location (read-only and hidden files included, locked files retried)
+        /// and checks that it is really empty. Throws <see cref="ExportLocationNotCleanException"/> if anything is
+        /// left, so an export never lands on top of stale files.
+        /// </summary>
         public void PrepareExportLocation()
         {
             if (Directory.Exists(_exportLocation))
             {
                 _log.WriteLine("Deleting location " + _exportLocation + ".");
+                List<string> remaining = FileOps.WipeDirectoryContents(_exportLocation);
+                if (remaining.Count > 0)
+                {
+                    throw new ExportLocationNotCleanException(_exportLocation, remaining);
+                }
             }
-            FileOps.RemoveDirectory(_exportLocation);
-            if (!Directory.Exists(_exportLocation))
+            else
             {
                 _log.WriteLine("Export location " + _exportLocation + " does not exist");
             }
             FileOps.EnsureDirectory(_exportLocation);
         }
 
+        /// <summary>Files written by the last <see cref="Run"/>.</summary>
+        public ICollection<string> WrittenFiles { get { return _written; } }
+
+        private void Written(string path)
+        {
+            _written.Add(Path.GetFullPath(path));
+        }
+
+        /// <summary>
+        /// After a run: removes anything in the export location that this run did not write (e.g. created by
+        /// another program during the export), plus folders left empty. The export location then holds
+        /// exactly this run's output.
+        /// </summary>
+        public int RemoveFilesNotWrittenThisRun()
+        {
+            int removed = 0;
+            List<string> entries = FileOps.ListEntries(_exportLocation);
+            foreach (string entry in entries.Where(e => !Directory.Exists(e) || (File.GetAttributes(e) & FileAttributes.ReparsePoint) != 0))
+            {
+                if (_written.Contains(Path.GetFullPath(entry))) continue;
+                try
+                {
+                    var attributes = File.GetAttributes(entry);
+                    File.SetAttributes(entry, attributes & ~(FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System));
+                    if ((attributes & FileAttributes.Directory) != 0) Directory.Delete(entry, false); else File.Delete(entry);
+                    _log.WriteLine("Removed " + entry + " (not written by this export)");
+                    removed++;
+                }
+                catch (Exception exc)
+                {
+                    _log.WriteLine("WARNING: could not remove " + entry + " (not written by this export): " + exc.Message);
+                }
+            }
+            foreach (string dir in entries.Where(Directory.Exists).OrderByDescending(d => d.Length))
+            {
+                try
+                {
+                    if (Directory.GetFileSystemEntries(dir).Length == 0) Directory.Delete(dir, false);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            return removed;
+        }
+
         /// <summary>Exports every open project of every TIA Portal instance.</summary>
         public void Run(IEnumerable<ITiaPortalProcess> processes)
+        {
+            _written.Clear();
+            RunProcesses(processes);
+            RemoveFilesNotWrittenThisRun();
+        }
+
+        private void RunProcesses(IEnumerable<ITiaPortalProcess> processes)
         {
             _log.WriteLine("Enumerating TIA processes..");
             foreach (ITiaPortalProcess process in processes)
@@ -189,6 +265,7 @@ namespace TiaExportBlocks
                 _log.WriteLine("RP [" + rootPrefix + "] Block [" + block.Name + "] prefix [" + currentPath + "] to " + fileInfo.FullName);
                 block.GenerateSource(fileInfoTemp);
                 FileOps.MoveReplacing(fileInfoTemp.FullName, fileInfo.FullName);
+                Written(fileInfo.FullName);
             }
             catch (Exception exc)
             {
@@ -221,6 +298,7 @@ namespace TiaExportBlocks
                     File.Delete(fileInfo.FullName);
                 }
                 plcType.GenerateSource(fileInfo);
+                Written(fileInfo.FullName);
             }
             catch (Exception exc)
             {
@@ -251,6 +329,7 @@ namespace TiaExportBlocks
                 var fileInfo = new FileInfo(ExportPaths.PlcTagTableFile(_exportLocation, rootPrefix, table.Name));
                 _log.WriteLine(table.Name + " to " + fileInfo.FullName);
                 FileOps.MoveReplacing(fileInfoTemp.FullName, fileInfo.FullName);
+                Written(fileInfo.FullName);
             }
             catch (Exception exc)
             {
@@ -307,6 +386,7 @@ namespace TiaExportBlocks
                 FileOps.DeleteIfExists(fileInfo.FullName);
                 _log.WriteLine(item.Name + " to " + fileInfo.FullName);
                 item.Export(fileInfo);
+                Written(fileInfo.FullName);
             }
             catch (Exception exc)
             {

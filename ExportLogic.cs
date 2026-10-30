@@ -41,6 +41,40 @@ namespace TiaExportBlocks
             return deviceItemName != null && deviceItemName.Contains("PLC");
         }
 
+        /// <summary>
+        /// Absolute export location without trailing separator. Refuses empty/invalid paths and drive or share
+        /// roots: everything inside the export location is deleted on every full export.
+        /// </summary>
+        public static bool TryNormalizeExportLocation(string path, out string normalized, out string error)
+        {
+            normalized = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                error = "Export location is empty";
+                return false;
+            }
+            string full;
+            try
+            {
+                full = Path.GetFullPath(path);
+            }
+            catch (Exception exc)
+            {
+                error = "Export location '" + path + "' is not a valid path: " + exc.Message;
+                return false;
+            }
+            string root = Path.GetPathRoot(full) ?? string.Empty;
+            string trimmed = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (root.Length == 0 || trimmed.Length <= root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length)
+            {
+                error = "Export location '" + path + "' is a drive or share root. Use a dedicated folder: its whole content is deleted on every export.";
+                return false;
+            }
+            normalized = trimmed;
+            return true;
+        }
+
         /// <summary>The program takes exactly one argument: the export location.</summary>
         public static bool TryParseArgs(string[] args, out string exportLocation)
         {
@@ -161,6 +195,78 @@ namespace TiaExportBlocks
             if (!File.Exists(path)) return false;
             File.Delete(path);
             return true;
+        }
+
+        /// <summary>
+        /// Deletes everything inside <paramref name="path"/> but keeps the folder itself. Read-only, hidden and
+        /// system attributes are cleared first. Links (junctions, symlinks) are removed without touching what they
+        /// point to. Locked entries are retried. Returns what could not be deleted (empty when the folder is clean).
+        /// </summary>
+        public static List<string> WipeDirectoryContents(string path, int attempts = 5, int retryDelayMs = 250)
+        {
+            var remaining = new List<string>();
+            if (!Directory.Exists(path)) return remaining;
+            for (int attempt = 1; attempt <= attempts; attempt++)
+            {
+                foreach (string entry in Directory.GetFileSystemEntries(path))
+                {
+                    try { DeleteEntry(entry); }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+                remaining = ListEntries(path);
+                if (remaining.Count == 0 || attempt == attempts) break;
+                System.Threading.Thread.Sleep(retryDelayMs);
+            }
+            return remaining;
+        }
+
+        /// <summary>All files and folders under <paramref name="path"/>, without following links.</summary>
+        public static List<string> ListEntries(string path)
+        {
+            var result = new List<string>();
+            if (!Directory.Exists(path)) return result;
+            foreach (string entry in Directory.GetFileSystemEntries(path))
+            {
+                result.Add(entry);
+                FileAttributes attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.Directory) != 0 && (attributes & FileAttributes.ReparsePoint) == 0)
+                {
+                    result.AddRange(ListEntries(entry));
+                }
+            }
+            return result;
+        }
+
+        private static void DeleteEntry(string entry)
+        {
+            FileAttributes attributes = File.GetAttributes(entry);
+            bool isDirectory = (attributes & FileAttributes.Directory) != 0;
+            bool isLink = (attributes & FileAttributes.ReparsePoint) != 0;
+            ClearProtection(entry, attributes);
+            if (!isDirectory)
+            {
+                File.Delete(entry);
+                return;
+            }
+            if (!isLink)
+            {
+                foreach (string child in Directory.GetFileSystemEntries(entry))
+                {
+                    DeleteEntry(child);
+                }
+            }
+            // Non-recursive: for a junction/symlink this removes only the link, never the target.
+            Directory.Delete(entry, false);
+        }
+
+        private static void ClearProtection(string entry, FileAttributes attributes)
+        {
+            const FileAttributes protection = FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System;
+            if ((attributes & protection) != 0)
+            {
+                File.SetAttributes(entry, attributes & ~protection);
+            }
         }
 
         /// <summary>Moves source to destination, replacing any existing destination file.</summary>

@@ -233,6 +233,121 @@ namespace TiaExportBlocks.Tests
             Assert.Equal(bytes, File.ReadAllBytes(dst));
         }
 
+        // ---- WipeDirectoryContents ----
+
+        [Fact]
+        public void Wipe_MissingFolder_ReturnsNothingLeft()
+        {
+            Assert.Empty(FileOps.WipeDirectoryContents(In("missing")));
+        }
+
+        [Fact]
+        public void Wipe_RemovesEverythingButKeepsTheFolder()
+        {
+            string export = In("export");
+            Write(Path.Combine(export, "PLC_1", "scl", "Program blocks", "Main.scl"), "x");
+            Write(Path.Combine(export, "HMI_1", "hmi_tag_tables", "xml", "Tags.xml"), "x");
+            Write(Path.Combine(export, "notes.txt"), "x");
+            Directory.CreateDirectory(Path.Combine(export, "empty", "nested"));
+
+            Assert.Empty(FileOps.WipeDirectoryContents(export));
+            Assert.True(Directory.Exists(export));
+            Assert.Empty(Directory.GetFileSystemEntries(export));
+        }
+
+        [Fact]
+        public void Wipe_RemovesReadOnlyHiddenAndSystemEntries()
+        {
+            string export = In("export");
+            string file = Path.Combine(export, "a", "ro.scl");
+            Write(file, "x");
+            File.SetAttributes(file, FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System);
+            var dir = new DirectoryInfo(Path.Combine(export, "a"));
+            dir.Attributes |= FileAttributes.ReadOnly | FileAttributes.Hidden;
+
+            Assert.Empty(FileOps.WipeDirectoryContents(export));
+            Assert.Empty(Directory.GetFileSystemEntries(export));
+        }
+
+        [Fact]
+        public void Wipe_LockedFile_IsReportedAndOthersAreDeleted()
+        {
+            string export = In("export");
+            string locked = Path.Combine(export, "locked.scl");
+            Write(locked, "x");
+            Write(Path.Combine(export, "free.scl"), "x");
+
+            using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var remaining = FileOps.WipeDirectoryContents(export, attempts: 2, retryDelayMs: 10);
+
+                Assert.Equal(new[] { locked }, remaining);
+            }
+            Assert.False(File.Exists(Path.Combine(export, "free.scl")));
+        }
+
+        [Fact]
+        public void Wipe_FileUnlockedWhileRetrying_IsDeleted()
+        {
+            string export = In("export");
+            string locked = Path.Combine(export, "busy.scl");
+            Write(locked, "x");
+            var stream = new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None);
+            var release = System.Threading.Tasks.Task.Run(() => { System.Threading.Thread.Sleep(150); stream.Dispose(); });
+
+            var remaining = FileOps.WipeDirectoryContents(export, attempts: 20, retryDelayMs: 50);
+
+            release.Wait();
+            Assert.Empty(remaining);
+            Assert.Empty(Directory.GetFileSystemEntries(export));
+        }
+
+        [Fact]
+        public void Wipe_Junction_RemovesTheLinkButNeverTheTarget()
+        {
+            string export = In("export");
+            string outside = In("outside");
+            Write(Path.Combine(outside, "precious.txt"), "keep me");
+            Directory.CreateDirectory(export);
+            string link = Path.Combine(export, "link");
+            CreateJunction(link, outside);
+
+            Assert.Empty(FileOps.WipeDirectoryContents(export));
+            Assert.False(Directory.Exists(link));
+            Assert.Equal("keep me", File.ReadAllText(Path.Combine(outside, "precious.txt")));
+        }
+
+        [Fact]
+        public void ListEntries_DoesNotFollowJunctions()
+        {
+            string export = In("export");
+            string outside = In("outside");
+            Write(Path.Combine(outside, "precious.txt"), "x");
+            Write(Path.Combine(export, "a.scl"), "x");
+            string link = Path.Combine(export, "link");
+            CreateJunction(link, outside);
+
+            var entries = FileOps.ListEntries(export);
+
+            Assert.Equal(2, entries.Count);
+            Assert.Contains(link, entries);
+        }
+
+        private static void CreateJunction(string link, string target)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c mklink /J \"" + link + "\" \"" + target + "\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using (var p = System.Diagnostics.Process.Start(psi))
+            {
+                p.WaitForExit();
+                Assert.Equal(0, p.ExitCode);
+            }
+            Assert.True((File.GetAttributes(link) & FileAttributes.ReparsePoint) != 0);
+        }
+
         // ---- End-to-end layout (what Program does around each TIA export call) ----
 
         [Fact]
