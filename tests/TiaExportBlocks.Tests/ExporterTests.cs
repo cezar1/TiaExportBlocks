@@ -659,10 +659,12 @@ namespace TiaExportBlocks.Tests
                     .WithTagTables(_tia.PlcTagTable("Tags"))),
                 _tia.HmiStation("H", "HMI_1", _tia.Hmi("HMI_1").WithTagTables(_tia.HmiTagTable("Tags"))));
 
+            // XML exports carry their export time in <DocumentInfo>; compare them without it.
+            Func<string, string> content = f => f.EndsWith(".xml") ? FileOps.XmlContentHash(Path.Combine(_export, f)) : Read(f);
             Run(project());
-            var first = ExportedFiles().ToDictionary(f => f, Read);
+            var first = ExportedFiles().ToDictionary(f => f, content);
             Run(project());
-            var second = ExportedFiles().ToDictionary(f => f, Read);
+            var second = ExportedFiles().ToDictionary(f => f, content);
 
             Assert.Equal(first, second);
             Assert.Equal(4, second.Count);

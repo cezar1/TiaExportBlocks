@@ -508,13 +508,19 @@ namespace TiaExportBlocks.Tests.Fakes
             get
             {
                 return "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<Document>\r\n  <Engineering version=\"V15.1\" />\r\n"
+                    + "  <DocumentInfo>\r\n    <Created>" + _created.ToString("o") + "</Created>\r\n    <ExportSetting>WithDefaults</ExportSetting>\r\n  </DocumentInfo>\r\n"
                     + "  <" + _opennessType + " ID=\"0\">\r\n    <AttributeList>\r\n      <Name>" + Name + "</Name>\r\n    </AttributeList>\r\n    " + Content + "\r\n"
                     + "  </" + _opennessType + ">\r\n</Document>";
             }
         }
 
+        private DateTime _created;
+        private static long _exports;
+
         public void Export(FileInfo target)
         {
+            // Like TIA: every export carries its own creation time, even when nothing changed.
+            _created = new DateTime(2026, 10, 30, 0, 0, 0, DateTimeKind.Utc).AddSeconds(System.Threading.Interlocked.Increment(ref _exports));
             _tia.Clock.Advance(_tia.ExportCost);
             _tia.WriteTarget("Export", Name, target, ExpectedXml, Fail, false);
         }

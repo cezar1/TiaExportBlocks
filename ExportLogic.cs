@@ -100,10 +100,19 @@ namespace TiaExportBlocks
         /// <summary>Print a per-phase timing table and append the run to a CSV history.</summary>
         public bool Benchmark;
 
+        /// <summary>Wait for Enter before exiting (also after errors), so the output can be read when started by double-click or a shortcut.</summary>
+        public bool PauseAtEnd;
+
+        /// <summary>True if --pause-at-end is among the raw arguments; used when the rest of the command line is invalid.</summary>
+        public static bool WantsPause(string[] args)
+        {
+            return args != null && Array.Exists(args, a => string.Equals(a, "--pause-at-end", StringComparison.OrdinalIgnoreCase));
+        }
+
         /// <summary>CSV history file for --benchmark; null = default (%LOCALAPPDATA%\TiaExportBlocks\benchmark.csv).</summary>
         public string BenchmarkCsv;
 
-        public const string Usage = @"Usage: TiaExportBlocks.exe C:\Test [--incremental] [--batch N] [--benchmark [--benchmark-csv file.csv]]";
+        public const string Usage = @"Usage: TiaExportBlocks.exe C:\Test [--incremental] [--batch N] [--benchmark [--benchmark-csv file.csv]] [--pause-at-end]";
 
         /// <summary>
         /// Exactly one export location is required; it is made absolute and may not be a drive root.
@@ -134,6 +143,10 @@ namespace TiaExportBlocks
                     }
                     result.BatchSize = n;
                     i++;
+                }
+                else if (string.Equals(arg, "--pause-at-end", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.PauseAtEnd = true;
                 }
                 else if (string.Equals(arg, "--benchmark", StringComparison.OrdinalIgnoreCase))
                 {
@@ -438,6 +451,32 @@ namespace TiaExportBlocks
             {
                 return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
             }
+        }
+
+        private static readonly Regex VolatileXmlHeader = new Regex(@"<DocumentInfo>.*?</DocumentInfo>\s*", RegexOptions.Singleline | RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// Hash of an Openness XML export without its &lt;DocumentInfo&gt; header. That header holds the export time
+        /// (&lt;Created&gt;) and installed products, so it differs on every export even when the content is the same.
+        /// </summary>
+        public static string XmlContentHash(string path)
+        {
+            if (!File.Exists(path)) return null;
+            bool hasBom;
+            string text = ReadUtf8Lenient(path, out hasBom);
+            string content = VolatileXmlHeader.Replace(text, "");
+            using (var sha = SHA256.Create())
+            {
+                return BitConverter.ToString(sha.ComputeHash(new UTF8Encoding(false).GetBytes(content))).Replace("-", "");
+            }
+        }
+
+        private static string ReadUtf8Lenient(string path, out bool hasBom)
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+            int offset = hasBom ? 3 : 0;
+            return new UTF8Encoding(false, false).GetString(bytes, offset, bytes.Length - offset);
         }
 
         /// <summary>Deletes empty folders from the file's folder upwards, stopping at (and keeping) <paramref name="stopAt"/>.</summary>

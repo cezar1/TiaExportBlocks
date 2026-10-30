@@ -123,6 +123,32 @@ namespace TiaExportBlocks.Tests
             Assert.Contains("--benchmark-csv", Fails(@"C:\Export", "--benchmark-csv", "--incremental"));
         }
 
+        [Fact]
+        public void PauseAtEnd_IsOffByDefault()
+        {
+            Assert.False(Parse(@"C:\Export").PauseAtEnd);
+        }
+
+        [Fact]
+        public void PauseAtEnd_Flag_CombinesWithOthers()
+        {
+            var o = Parse("--pause-at-end", @"C:\Export", "--incremental", "--batch", "50");
+
+            Assert.True(o.PauseAtEnd);
+            Assert.True(o.Incremental);
+            Assert.Equal(50, o.BatchSize);
+        }
+
+        [Fact]
+        public void WantsPause_FindsTheFlagEvenWhenTheRestIsInvalid()
+        {
+            Fails("--pause-at-end", "--unknown");
+
+            Assert.True(CommandLineOptions.WantsPause(new[] { "--unknown", "--PAUSE-AT-END" }));
+            Assert.False(CommandLineOptions.WantsPause(new[] { @"C:\Export" }));
+            Assert.False(CommandLineOptions.WantsPause(null));
+        }
+
         [Theory]
         [InlineData(@"C:\")]
         [InlineData(@"\\server\share")]

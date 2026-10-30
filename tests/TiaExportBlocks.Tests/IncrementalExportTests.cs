@@ -93,9 +93,83 @@ namespace TiaExportBlocks.Tests
             Assert.Empty(_h.Generated());
             Assert.Equal(AllFiles, _h.ExportedFiles());
             var summary = _h.Summary("Line3");
-            Assert.Equal(3, summary.Unchanged);
+            Assert.Equal(7, summary.Unchanged); // 3 blocks/types + 4 XML exports identical apart from their export time
             Assert.Equal(0, summary.Removed);
-            Assert.Equal(4, summary.Exported); // tag tables and text lists are always exported
+            Assert.Equal(0, summary.Exported);
+        }
+
+        // ---------------- regression (0.2): XML export time made every incremental run export everything ----------------
+
+        [Fact]
+        public void XmlExportTimeAlone_DoesNotCountAsTagTableChange()
+        {
+            _h.Incremental(Project());
+
+            _h.Incremental(Project());
+
+            Assert.DoesNotContain("tag tables of PLC_1 changed", _h.Log);
+            Assert.Contains("Incremental: PLC_1: 0 of 3 blocks/types to export, 3 unchanged", _h.Log);
+            Assert.Empty(_h.Generated());
+        }
+
+        [Fact]
+        public void UnchangedXml_IsLeftUntouchedOnDisk()
+        {
+            _h.Incremental(Project());
+            string file = _h.PathOf(@"PLC_1\tag_tables\xml\Default tag table.xml");
+            string before = File.ReadAllText(file);
+            var stamp = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(file, stamp);
+
+            _h.Incremental(Project());
+
+            Assert.Equal(before, File.ReadAllText(file)); // old <Created> kept: no diff in git
+            Assert.Equal(stamp, File.GetLastWriteTimeUtc(file));
+        }
+
+        [Fact]
+        public void ChangedXml_IsReplaced_AndNamedInTheLog()
+        {
+            _h.Incremental(Project());
+            _tags.Content = "<Tag>Renamed</Tag>";
+
+            _h.Incremental(Project());
+
+            Assert.Contains("<Tag>Renamed</Tag>", _h.Read(@"PLC_1\tag_tables\xml\Default tag table.xml"));
+            Assert.Contains("Incremental: tag tables of PLC_1 changed since the last export (Default tag table)", _h.Log);
+        }
+
+        [Fact]
+        public void Log_SaysHowManyBlocksAreExportedAndWhy()
+        {
+            _h.Incremental(Project());
+            _main.Edit("// edited");
+
+            _h.Incremental(Project());
+
+            Assert.Contains("Incremental: PLC_1: 1 of 3 blocks/types to export, 2 unchanged", _h.Log);
+        }
+
+        [Fact]
+        public void Log_NamesAddedAndRemovedElements()
+        {
+            _h.Incremental(Project());
+            _data.Remove(_recipe);
+            _data.With(Tia.Db("DB_Recipes"));
+
+            _h.Incremental(Project());
+
+            Assert.Contains("(new: DB_Recipes.db) (gone: DB_Recipe.db)", _h.Log);
+        }
+
+        [Fact]
+        public void Log_WarnsAboutUnreadableModifiedDates()
+        {
+            _main.ModifiedDate = null;
+
+            _h.Incremental(Project());
+
+            Assert.Contains("Incremental: 1 blocks/types of PLC_1 have no readable ModifiedDate and are always exported", _h.Log);
         }
 
         [Fact]
