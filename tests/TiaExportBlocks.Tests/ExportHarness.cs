@@ -53,6 +53,7 @@ namespace TiaExportBlocks.Tests
                 BatchSize = batch,
                 StateDirectory = StateDir,
                 TempDirectory = TempDir,
+                Clock = Tia.Clock,
             });
             exporter.PrepareExportLocation();
             exporter.Run(processes);

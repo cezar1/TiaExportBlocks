@@ -6,6 +6,17 @@ using System.Text;
 
 namespace TiaExportBlocks.Tests.Fakes
 {
+    /// <summary>A clock that only moves when told to: simulated time for benchmark tests.</summary>
+    public sealed class FakeClock : IClock
+    {
+        public TimeSpan Elapsed { get; private set; }
+
+        public void Advance(TimeSpan time)
+        {
+            Elapsed += time;
+        }
+    }
+
     /// <summary>Stands in for Siemens.Engineering.EngineeringTargetInvocationException and friends.</summary>
     public sealed class FakeOpennessException : Exception
     {
@@ -33,6 +44,14 @@ namespace TiaExportBlocks.Tests.Fakes
 
         /// <summary>Strict mode: GenerateSource/Export fail if the target folder does not exist.</summary>
         public bool RequireExistingDirectory = true;
+
+        /// <summary>Simulated time; Openness calls advance it by the costs below (all zero by default).</summary>
+        public readonly FakeClock Clock = new FakeClock();
+        public TimeSpan AttachCost = TimeSpan.Zero;
+        public TimeSpan ReadSoftwareCost = TimeSpan.Zero;
+        public TimeSpan GenerateCallCost = TimeSpan.Zero;
+        public TimeSpan GeneratePerItemCost = TimeSpan.Zero;
+        public TimeSpan ExportCost = TimeSpan.Zero;
 
         /// <summary>Write generated sources with a UTF-8 BOM, like TIA Portal.</summary>
         public bool WriteUtf8Bom = true;
@@ -84,6 +103,7 @@ namespace TiaExportBlocks.Tests.Fakes
         /// <summary>GenerateSource for a list of blocks or types: one file with all of them, like TIA.</summary>
         internal void GenerateSources(IList<string> names, IList<string> sources, IList<Exception> failures, bool writePartial, FileInfo target)
         {
+            Clock.Advance(GenerateCallCost + TimeSpan.FromTicks(GeneratePerItemCost.Ticks * names.Count));
             string content = string.Concat(sources);
             if (names.Count > 1 && BatchOutputQuirk != null) content = BatchOutputQuirk(content);
             Exception fail = failures.FirstOrDefault(f => f != null);
@@ -201,6 +221,7 @@ namespace TiaExportBlocks.Tests.Fakes
         public ITiaPortal Attach()
         {
             _tia.Record("Attach " + Id);
+            _tia.Clock.Advance(_tia.AttachCost);
             return _portal;
         }
     }
@@ -263,6 +284,7 @@ namespace TiaExportBlocks.Tests.Fakes
         public ITiaSoftware GetSoftware()
         {
             _tia.Record("GetSoftware " + Name);
+            _tia.Clock.Advance(_tia.ReadSoftwareCost);
             if (FailGetSoftware != null) throw FailGetSoftware;
             return _software;
         }
@@ -493,6 +515,7 @@ namespace TiaExportBlocks.Tests.Fakes
 
         public void Export(FileInfo target)
         {
+            _tia.Clock.Advance(_tia.ExportCost);
             _tia.WriteTarget("Export", Name, target, ExpectedXml, Fail, false);
         }
     }

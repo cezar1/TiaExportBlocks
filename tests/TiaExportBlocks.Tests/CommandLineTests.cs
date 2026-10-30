@@ -87,6 +87,42 @@ namespace TiaExportBlocks.Tests
             Fails(@"C:\Export", @"C:\Other");
         }
 
+        [Fact]
+        public void Benchmark_IsOffByDefault()
+        {
+            var o = Parse(@"C:\Export");
+
+            Assert.False(o.Benchmark);
+            Assert.Null(o.BenchmarkCsv);
+        }
+
+        [Fact]
+        public void Benchmark_Flag()
+        {
+            var o = Parse(@"C:\Export", "--benchmark", "--batch", "50");
+
+            Assert.True(o.Benchmark);
+            Assert.Null(o.BenchmarkCsv);
+            Assert.Equal(50, o.BatchSize);
+        }
+
+        [Fact]
+        public void BenchmarkCsv_ImpliesBenchmark()
+        {
+            var o = Parse(@"C:\Export", "--benchmark-csv", @"D:\bench\runs.csv");
+
+            Assert.True(o.Benchmark);
+            Assert.Equal(@"D:\bench\runs.csv", o.BenchmarkCsv);
+            Assert.Equal(@"C:\Export", o.ExportLocation);
+        }
+
+        [Fact]
+        public void BenchmarkCsv_WithoutPath_IsAnError()
+        {
+            Assert.Contains("--benchmark-csv", Fails(@"C:\Export", "--benchmark-csv"));
+            Assert.Contains("--benchmark-csv", Fails(@"C:\Export", "--benchmark-csv", "--incremental"));
+        }
+
         [Theory]
         [InlineData(@"C:\")]
         [InlineData(@"\\server\share")]

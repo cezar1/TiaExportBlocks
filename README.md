@@ -27,7 +27,7 @@ Because `Siemens.Engineering.dll` is not in this repo, the workflow downloads it
 
 # Usage
 
-    TiaExportBlocks.exe C:\Test [--incremental] [--batch N]
+    TiaExportBlocks.exe C:\Test [--incremental] [--batch N] [--benchmark [--benchmark-csv file.csv]]
 
 Without options: full export. The export location is emptied and everything is exported, one block per Openness call.
 
@@ -47,6 +47,24 @@ Keeps the export location and generates a block or UDT again only when needed. A
 Tag tables and HMI tag tables/text lists are always exported. A failed export keeps the previous file and is retried on the next run. Afterwards the tool deletes the files it exported earlier whose element is gone (deleted or renamed blocks, UDTs, tag tables, text lists, removed or renamed PLCs/HMIs), and folders left empty. It never deletes files it did not write (README, `.git`, hand-written files) or files another project in the same export location also wrote. If part of a project cannot be read from TIA, nothing is deleted in that run.
 
 State is kept per export location and per project in `%LOCALAPPDATA%\TiaExportBlocks`, outside the export location. A missing or unreadable state simply means everything is exported. Changes that alter generated sources without changing any of the above (e.g. switching the project's editing language) are not detected; run a full export occasionally.
+
+## --benchmark
+
+Every run prints its total time (`Execution Time`, from emptying the export location to the end of the export) and the time per project. With `--benchmark` it also prints where the time went and appends the run to a CSV history, so different settings (e.g. `--batch` sizes, full vs incremental) can be compared over time:
+
+```
+Benchmark: total 47.3 s
+  Phase                                  Time  Share  Calls  Items  Avg/call
+  Prepare export location              412 ms    1 %      1                412 ms
+  Attach to TIA Portal                  2.1 s    4 %      1                  2.1 s
+  Generate sources (blocks, UDTs)      38.0 s   80 %     12    520         3.2 s
+  Batch verification                    0.9 s    2 %      4                236 ms
+  Export XML (tag tables, text lists)   4.1 s    9 %     30               137 ms
+  Cleanup and state                    180 ms    0 %      2                 90 ms
+  Other (reading TIA, files)            1.6 s    3 %
+```
+
+"Other" is everything outside the measured Openness calls: walking the project tree in TIA, moving and hashing files. The CSV goes to `%LOCALAPPDATA%\TiaExportBlocks\benchmark.csv`, or to the file given with `--benchmark-csv` (which implies `--benchmark`). Columns: `timestamp_utc, export_location, mode, batch_size, total_ms, prepare_ms, attach_ms, generate_ms, generate_calls, generated_items, verify_ms, export_xml_ms, export_xml_calls, cleanup_ms, other_ms, exported, unchanged, failed, removed`.
 
 # Clean export guarantee
 
@@ -73,6 +91,7 @@ Names are made file-system safe (invalid characters become `_`). Only S7-1500 st
 | `Program.cs` | Entry point: argument check, timing, wiring |
 | `Exporter.cs` | The export run: walks instances → projects → devices → blocks/types/tag tables/HMI items |
 | `ExportLogic.cs` | Rules, output paths, file name sanitizing, file replace steps |
+| `Benchmark.cs` | Total and per-phase timing, report table, CSV history |
 | `TiaModel.cs` | Interfaces for the slice of the Openness object model the exporter uses |
 | `SiemensAdapters.cs` | Thin wrappers exposing the real `Siemens.Engineering` objects through those interfaces |
 
