@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -26,6 +27,9 @@ namespace TiaExportBlocks
     public interface ITiaProject
     {
         string Name { get; }
+
+        /// <summary>Full path of the project file; identifies the project in the incremental export state.</summary>
+        string Path { get; }
         IEnumerable<ITiaDevice> Devices { get; }
     }
 
@@ -59,6 +63,12 @@ namespace TiaExportBlocks
         IPlcBlockGroup BlockGroup { get; }
         IEnumerable<IPlcType> Types { get; }
         IPlcTagTableGroup TagTableGroup { get; }
+
+        /// <summary>ExternalSourceGroup.GenerateSource for one or more blocks into a single file.</summary>
+        void GenerateSource(IList<IPlcBlock> blocks, FileInfo target);
+
+        /// <summary>ExternalSourceGroup.GenerateSource for one or more PLC data types into a single file.</summary>
+        void GenerateSource(IList<IPlcType> types, FileInfo target);
     }
 
     public interface IPlcBlockGroup
@@ -75,15 +85,17 @@ namespace TiaExportBlocks
         /// <summary>ProgrammingLanguage.ToString(), e.g. "SCL", "DB", "LAD".</summary>
         string ProgrammingLanguage { get; }
 
-        /// <summary>ExternalSourceGroup.GenerateSource for this block into the given file.</summary>
-        void GenerateSource(FileInfo target);
+        /// <summary>The "ModifiedDate" attribute, or null if it cannot be read.</summary>
+        DateTime? ModifiedDate { get; }
     }
 
     /// <summary>A PLC data type (UDT).</summary>
     public interface IPlcType
     {
         string Name { get; }
-        void GenerateSource(FileInfo target);
+
+        /// <summary>The "ModifiedDate" attribute, or null if it cannot be read.</summary>
+        DateTime? ModifiedDate { get; }
     }
 
     /// <summary>PLC tag table system group or user group.</summary>

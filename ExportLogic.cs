@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 
 // Logic that does not depend on Siemens.Engineering, kept separate so it can be unit tested
 // without TIA Portal. The test project compiles this file directly (see tests/).
@@ -82,6 +85,142 @@ namespace TiaExportBlocks
             if (args == null || args.Length != 1) return false;
             exportLocation = args[0];
             return true;
+        }
+    }
+
+    /// <summary>Parsed command line: TiaExportBlocks.exe &lt;export location&gt; [--incremental] [--batch N]</summary>
+    public sealed class CommandLineOptions
+    {
+        public const int MaxBatchSize = 1000;
+
+        public string ExportLocation;
+        public bool Incremental;
+        public int BatchSize = 1;
+
+        public const string Usage = @"Usage: TiaExportBlocks.exe C:\Test [--incremental] [--batch N]";
+
+        /// <summary>
+        /// Exactly one export location is required; it is made absolute and may not be a drive root.
+        /// Unknown options are rejected rather than ignored.
+        /// </summary>
+        public static bool TryParse(string[] args, out CommandLineOptions options, out string error)
+        {
+            options = null;
+            error = null;
+            var result = new CommandLineOptions();
+            var paths = new List<string>();
+            if (args == null) args = new string[0];
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                string arg = args[i];
+                if (string.Equals(arg, "--incremental", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Incremental = true;
+                }
+                else if (string.Equals(arg, "--batch", StringComparison.OrdinalIgnoreCase))
+                {
+                    int n;
+                    if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out n) || n < 1 || n > MaxBatchSize)
+                    {
+                        error = "--batch needs a number of blocks per call between 1 and " + MaxBatchSize;
+                        return false;
+                    }
+                    result.BatchSize = n;
+                    i++;
+                }
+                else if (arg.StartsWith("--", StringComparison.Ordinal))
+                {
+                    error = "Unknown option " + arg;
+                    return false;
+                }
+                else
+                {
+                    paths.Add(arg);
+                }
+            }
+
+            if (paths.Count != 1)
+            {
+                error = paths.Count == 0 ? "No export location given" : "More than one export location given";
+                return false;
+            }
+
+            string normalized;
+            if (!ExportRules.TryNormalizeExportLocation(paths[0], out normalized, out error)) return false;
+            result.ExportLocation = normalized;
+            options = result;
+            return true;
+        }
+
+    }
+
+    /// <summary>One block or type cut out of a multi-block generated source file.</summary>
+    public sealed class SourcePart
+    {
+        public string Name;
+        public string Keyword;
+
+        /// <summary>Exact text of the part, from its first line up to the next part (or end of file).</summary>
+        public string Text;
+    }
+
+    /// <summary>
+    /// Splits a source generated for several blocks (GenerateSource with a list) into one part per block,
+    /// keeping the text byte-for-byte (line endings, blank lines between blocks).
+    /// </summary>
+    public static class SourceSplitter
+    {
+        private static readonly Regex BlockStart = new Regex(
+            @"^(FUNCTION_BLOCK|FUNCTION|ORGANIZATION_BLOCK|DATA_BLOCK|TYPE)\s+""([^""]+)""", RegexOptions.CultureInvariant);
+
+        /// <summary>Returns null when the text does not cleanly consist of complete blocks with unique names.</summary>
+        public static List<SourcePart> Split(string text)
+        {
+            if (text == null) return null;
+            var parts = new List<SourcePart>();
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            SourcePart current = null;
+            int currentStart = 0;
+            bool inBody = false;
+            string endKeyword = null;
+
+            int pos = 0;
+            while (pos < text.Length)
+            {
+                int lineEnd = text.IndexOf('\n', pos);
+                int next = lineEnd < 0 ? text.Length : lineEnd + 1;
+                string line = text.Substring(pos, (lineEnd < 0 ? text.Length : lineEnd) - pos).TrimEnd('\r');
+
+                if (inBody)
+                {
+                    if (line.TrimEnd() == endKeyword) inBody = false;
+                }
+                else
+                {
+                    Match m = BlockStart.Match(line);
+                    if (m.Success)
+                    {
+                        if (current != null) current.Text = text.Substring(currentStart, pos - currentStart);
+                        current = new SourcePart { Keyword = m.Groups[1].Value, Name = m.Groups[2].Value };
+                        if (!names.Add(current.Name)) return null;
+                        parts.Add(current);
+                        currentStart = pos;
+                        endKeyword = "END_" + current.Keyword;
+                        inBody = true;
+                    }
+                    else if (line.Trim().Length != 0)
+                    {
+                        // Text outside of any block: not something we understand, don't guess.
+                        return null;
+                    }
+                }
+                pos = next;
+            }
+
+            if (inBody) return null;
+            if (current != null) current.Text = text.Substring(currentStart);
+            return parts;
         }
     }
 
@@ -267,6 +406,56 @@ namespace TiaExportBlocks
             {
                 File.SetAttributes(entry, attributes & ~protection);
             }
+        }
+
+        /// <summary>SHA-256 of the file content, hex; null if the file does not exist.</summary>
+        public static string Sha256(string path)
+        {
+            if (!File.Exists(path)) return null;
+            using (var sha = SHA256.Create())
+            using (var stream = File.OpenRead(path))
+            {
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+            }
+        }
+
+        /// <summary>Deletes empty folders from the file's folder upwards, stopping at (and keeping) <paramref name="stopAt"/>.</summary>
+        public static void RemoveEmptyParents(string filePath, string stopAt)
+        {
+            string stop = Path.GetFullPath(stopAt).TrimEnd('\\');
+            string dir = Path.GetDirectoryName(Path.GetFullPath(filePath));
+            while (dir != null
+                && dir.Length > stop.Length
+                && dir.StartsWith(stop + "\\", StringComparison.OrdinalIgnoreCase)
+                && Directory.Exists(dir)
+                && Directory.GetFileSystemEntries(dir).Length == 0)
+            {
+                Directory.Delete(dir);
+                dir = Path.GetDirectoryName(dir);
+            }
+        }
+
+        /// <summary>UTF-8 byte order mark, as written by TIA Portal source generation.</summary>
+        public static readonly byte[] Utf8Bom = { 0xEF, 0xBB, 0xBF };
+
+        /// <summary>Reads a text file; tells whether it started with a UTF-8 BOM (which is not part of the text).</summary>
+        public static string ReadUtf8(string path, out bool hasBom)
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+            int offset = hasBom ? 3 : 0;
+            return new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset);
+        }
+
+        /// <summary>Encodes text as UTF-8, with or without BOM.</summary>
+        public static byte[] EncodeUtf8(string text, bool withBom)
+        {
+            byte[] body = new UTF8Encoding(false).GetBytes(text);
+            if (!withBom) return body;
+            var result = new byte[body.Length + 3];
+            Buffer.BlockCopy(Utf8Bom, 0, result, 0, 3);
+            Buffer.BlockCopy(body, 0, result, 3, body.Length);
+            return result;
         }
 
         /// <summary>Moves source to destination, replacing any existing destination file.</summary>

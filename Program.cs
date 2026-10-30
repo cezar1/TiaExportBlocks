@@ -5,26 +5,23 @@ namespace TiaExportBlocks
 {
     class Program
     {
+        /// <returns>0 done, 1 export location could not be emptied, 2 invalid arguments.</returns>
         static int Main(string[] args)
         {
-            string exportLocation;
-            if (!ExportRules.TryParseArgs(args, out exportLocation))
-            {
-                Console.WriteLine("No arguments provided");
-                Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test");
-                Console.ReadLine();
-                return 2;
-            }
-
+            CommandLineOptions options;
             string error;
-            if (!ExportRules.TryNormalizeExportLocation(exportLocation, out exportLocation, out error))
+            if (!CommandLineOptions.TryParse(args, out options, out error))
             {
                 Console.WriteLine("ERROR: " + error);
+                Console.WriteLine(CommandLineOptions.Usage);
                 return 2;
             }
 
-            Console.WriteLine("Export location is " + exportLocation);
-            var exporter = new Exporter(exportLocation, Console.Out);
+            Console.WriteLine("Export location is " + options.ExportLocation
+                + (options.Incremental ? " (incremental export)" : " (full export)")
+                + ", batch size " + options.BatchSize);
+            var settings = new ExporterSettings { Incremental = options.Incremental, BatchSize = options.BatchSize };
+            var exporter = new Exporter(options.ExportLocation, Console.Out, settings);
             try
             {
                 exporter.PrepareExportLocation();

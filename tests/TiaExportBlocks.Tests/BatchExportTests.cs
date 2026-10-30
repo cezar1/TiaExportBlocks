@@ -1,0 +1,192 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using TiaExportBlocks.Tests.Fakes;
+using Xunit;
+
+namespace TiaExportBlocks.Tests
+{
+    /// <summary>--batch N: several blocks per GenerateSource call, split back into one file per block.</summary>
+    public class BatchExportTests : IDisposable
+    {
+        private readonly ExportHarness _h = new ExportHarness();
+        private readonly ExportHarness _reference = new ExportHarness();
+
+        public void Dispose()
+        {
+            _h.Dispose();
+            _reference.Dispose();
+        }
+
+        /// <summary>Same project for both harnesses: 10 SCL, 3 DB, 2 STL blocks in nested groups, 3 UDTs.</summary>
+        private static FakeProcess BuildProject(FakeTia tia, Action<FakePlcSoftware> customize = null)
+        {
+            var plc = tia.Plc("PLC_1")
+                .WithBlocks(Enumerable.Range(1, 6).Select(i => tia.Scl("FB_" + i)).ToArray())
+                .WithGroups(
+                    tia.Group("Line 1").With(Enumerable.Range(7, 4).Select(i => tia.Scl("FB_" + i)).ToArray())
+                        .With(tia.Group("Data").With(tia.Db("DB_A"), tia.Db("DB_B"), tia.Db("DB_C"))),
+                    tia.Group("Legacy").With(tia.Stl("FC_Old1"), tia.Stl("FC_Old2")))
+                .WithTypes(tia.Udt("UDT_A"), tia.Udt("UDT_B"), tia.Udt("UDT_C"));
+            if (customize != null) customize(plc);
+            return tia.Process(1, tia.Project("Line3", tia.S71500Station("S", "PLC_1", plc)));
+        }
+
+        private void AssertSameFilesAsSingleBlockExport()
+        {
+            _reference.Full(BuildProject(_reference.Tia));
+            var expected = _reference.ExportedFiles();
+            Assert.Equal(expected, _h.ExportedFiles());
+            foreach (var file in expected)
+            {
+                Assert.True(_reference.Bytes(file).SequenceEqual(_h.Bytes(file)), file + " differs from single-block export");
+            }
+        }
+
+        [Fact]
+        public void Batch_OutputIsByteIdenticalToSingleBlockExport()
+        {
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            Assert.Equal(18, _h.ExportedFiles().Count);
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_UsesFarFewerOpennessCalls()
+        {
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            // one call per file type (udt, scl, db, awl) + one single-block verification call per file type
+            Assert.Equal(8, _h.Tia.GenerateSourceCalls);
+        }
+
+        [Fact]
+        public void Batch_SplitsIntoChunksOfN()
+        {
+            _h.Run(false, 4, BuildProject(_h.Tia));
+
+            var sclCalls = _h.Tia.CallsStartingWith("GenerateSource FB_").ToList();
+            // 10 SCL blocks in chunks of 4: 4 + verification + 4 + 2
+            Assert.Equal(4, sclCalls.Count);
+            Assert.Equal(new[] { 4, 1, 4, 2 }, sclCalls.Select(c => c.Split(new[] { " -> " }, StringSplitOptions.None)[0].Split(',').Length));
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_KeepsUtf8BomExactlyAsTiaWritesIt()
+        {
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            byte[] bytes = _h.Bytes(@"PLC_1\scl\Program blocks\FB_1.scl");
+            Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, bytes.Take(3));
+        }
+
+        [Fact]
+        public void Batch_WithoutBom_WritesNoBom()
+        {
+            _h.Tia.WriteUtf8Bom = false;
+            _reference.Tia.WriteUtf8Bom = false;
+
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            Assert.Equal((byte)'F', _h.Bytes(@"PLC_1\scl\Program blocks\FB_1.scl")[0]);
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_CallFails_FallsBackToOneByOne_AndOnlyTheBadBlockIsMissing()
+        {
+            _h.Run(false, 50, BuildProject(_h.Tia, plc => plc.Root.With(_h.Tia.Scl("FB_Protected").Failing("know-how protected"))));
+
+            Assert.Contains("Batch export failed (know-how protected): exporting its blocks one by one", _h.Log);
+            Assert.Contains("know-how protected", _h.Log);
+            Assert.False(System.IO.File.Exists(_h.PathOf(@"PLC_1\scl\Program blocks\FB_Protected.scl")));
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_OutputMissingABlock_FallsBackToOneByOne()
+        {
+            _h.Tia.BatchOutputQuirk = text => text.Substring(0, text.LastIndexOf("\r\n\r\n", text.Length - 5, StringComparison.Ordinal) + 4);
+
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            Assert.Contains("did not split into its", _h.Log);
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_UnexpectedTextBetweenBlocks_FallsBackToOneByOne()
+        {
+            _h.Tia.BatchOutputQuirk = text => "// generated by TIA Portal\r\n" + text;
+
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            Assert.Contains("did not split into its", _h.Log);
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_FormattedDifferentlyFromSingleExport_IsDetectedAndSwitchedOff()
+        {
+            // A TIA version that puts an extra blank line after each block only in multi-block output:
+            // the split succeeds, but the files would differ from a single-block export.
+            _h.Tia.BatchOutputQuirk = text => text.Replace("END_FUNCTION_BLOCK\r\n\r\n", "END_FUNCTION_BLOCK\r\n\r\n\r\n");
+
+            _h.Run(false, 4, BuildProject(_h.Tia));
+
+            Assert.Contains("Batch output for .scl differs from single-block output: batching switched off for .scl", _h.Log);
+            var sclBatchCalls = _h.Tia.CallsStartingWith("GenerateSource FB_").Count(c => c.Contains(","));
+            Assert.Equal(1, sclBatchCalls); // no further batches after the mismatch
+            AssertSameFilesAsSingleBlockExport();
+        }
+
+        [Fact]
+        public void Batch_TypesAreBatchedToo()
+        {
+            _h.Run(false, 50, BuildProject(_h.Tia));
+
+            Assert.Single(_h.Tia.CallsStartingWith("GenerateSource UDT_A,UDT_B,UDT_C "));
+        }
+
+        [Fact]
+        public void Batch_WithIncremental_OnlyChangedBlocksAreGenerated()
+        {
+            FakeBlock fb3 = null, fb8 = null;
+            Action<FakePlcSoftware> grab = plc => { };
+            var tia = _h.Tia;
+            var plcSoftware = tia.Plc("PLC_1");
+            var blocks = Enumerable.Range(1, 10).Select(i => tia.Scl("FB_" + i)).ToArray();
+            plcSoftware.WithBlocks(blocks);
+            fb3 = blocks[2];
+            fb8 = blocks[7];
+            Func<FakeProcess> project = () => tia.Process(1, tia.Project("Line3", tia.S71500Station("S", "PLC_1", plcSoftware)));
+
+            _h.Run(true, 50, project());
+            fb3.Edit("// changed 3");
+            fb8.Edit("// changed 8");
+            _h.Run(true, 50, project());
+
+            Assert.Equal(new[] { "FB_3", "FB_8" }, _h.Generated().Distinct().OrderBy(n => n));
+            Assert.Contains("// changed 3", _h.Read(@"PLC_1\scl\Program blocks\FB_3.scl"));
+            Assert.Contains("// changed 8", _h.Read(@"PLC_1\scl\Program blocks\FB_8.scl"));
+        }
+
+        [Fact]
+        public void BatchSizeOne_IsTheOriginalOneCallPerBlock()
+        {
+            _h.Run(false, 1, BuildProject(_h.Tia));
+
+            Assert.Equal(18, _h.Tia.GenerateSourceCalls);
+            Assert.DoesNotContain(_h.Tia.CallsStartingWith("GenerateSource "), c => c.Split(new[] { " -> " }, StringSplitOptions.None)[0].Contains(","));
+        }
+
+        [Fact]
+        public void Exporter_RejectsBatchSizeBelowOne()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new Exporter(_h.Export, new System.IO.StringWriter(), new ExporterSettings { BatchSize = 0 }));
+        }
+    }
+}

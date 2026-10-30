@@ -5,6 +5,40 @@ using System.Linq;
 
 namespace TiaExportBlocks
 {
+    /// <summary>Options of an export run.</summary>
+    public sealed class ExporterSettings
+    {
+        /// <summary>
+        /// Keep the export location and export a block or type only when it changed (TIA ModifiedDate) or its file
+        /// was changed/removed on disk. Files of elements that disappeared from the project are deleted.
+        /// </summary>
+        public bool Incremental;
+
+        /// <summary>Blocks/types per GenerateSource call. 1 = one call per block (original behaviour).</summary>
+        public int BatchSize = 1;
+
+        /// <summary>Where the incremental state is kept. Null: %LOCALAPPDATA%\TiaExportBlocks.</summary>
+        public string StateDirectory;
+
+        /// <summary>Parent of the per-run scratch folder TIA writes into. Null: %TEMP%.</summary>
+        public string TempDirectory;
+    }
+
+    /// <summary>Counters for one exported project.</summary>
+    public sealed class ProjectSummary
+    {
+        public string Project;
+        public int Exported;
+        public int Unchanged;
+        public int Failed;
+        public int Removed;
+
+        public override string ToString()
+        {
+            return "Exported " + Exported + ", unchanged " + Unchanged + ", failed " + Failed + ", removed " + Removed;
+        }
+    }
+
     /// <summary>The export location could not be emptied; exporting on top of it could leave stale files.</summary>
     public sealed class ExportLocationNotCleanException : IOException
     {
@@ -28,32 +62,65 @@ namespace TiaExportBlocks
     {
         private readonly string _exportLocation;
         private readonly TextWriter _log;
+        private readonly ExporterSettings _settings;
+        private readonly List<ProjectSummary> _summaries = new List<ProjectSummary>();
         private readonly HashSet<string> _written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        public Exporter(string exportLocation, TextWriter log)
+        // Per run
+        private ExportState _state;
+        private string _runTempDirectory;
+        private readonly HashSet<string> _batchVerified = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _batchDisabled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Per project
+        private string _projectKey;
+        private Dictionary<string, StateEntry> _previous;
+        private Dictionary<string, StateEntry> _current;
+        private bool _cleanupSafe;
+        private ProjectSummary _summary;
+
+        public Exporter(string exportLocation, TextWriter log) : this(exportLocation, log, null) { }
+
+        public Exporter(string exportLocation, TextWriter log, ExporterSettings settings)
         {
             if (exportLocation == null) throw new ArgumentNullException("exportLocation");
             if (log == null) throw new ArgumentNullException("log");
             _exportLocation = exportLocation;
             _log = log;
+            _settings = settings ?? new ExporterSettings();
+            if (_settings.BatchSize < 1) throw new ArgumentOutOfRangeException("settings", "BatchSize must be at least 1");
         }
 
         public string ExportLocation { get { return _exportLocation; } }
 
+        /// <summary>Per-project counters of the last <see cref="Run"/>.</summary>
+        public IList<ProjectSummary> Summaries { get { return _summaries; } }
+
+        public string StateFile
+        {
+            get { return ExportState.FileFor(_settings.StateDirectory ?? ExportState.DefaultDirectory, _exportLocation); }
+        }
+
+        private bool Incremental { get { return _settings.Incremental; } }
+
         /// <summary>
-        /// Deletes everything inside the export location (read-only and hidden files included, locked files retried)
-        /// and checks that it is really empty. Throws <see cref="ExportLocationNotCleanException"/> if anything is
-        /// left, so an export never lands on top of stale files.
+        /// Full export: deletes everything inside the export location (read-only and hidden files included, locked
+        /// files retried) and checks that it is really empty; throws <see cref="ExportLocationNotCleanException"/>
+        /// if anything is left, so an export never lands on top of stale files.
+        /// Incremental export: keeps the previous export. Either way the folder exists afterwards.
         /// </summary>
         public void PrepareExportLocation()
         {
             if (Directory.Exists(_exportLocation))
             {
-                _log.WriteLine("Deleting location " + _exportLocation + ".");
-                List<string> remaining = FileOps.WipeDirectoryContents(_exportLocation);
-                if (remaining.Count > 0)
+                if (!Incremental)
                 {
-                    throw new ExportLocationNotCleanException(_exportLocation, remaining);
+                    _log.WriteLine("Deleting location " + _exportLocation + ".");
+                    List<string> remaining = FileOps.WipeDirectoryContents(_exportLocation);
+                    if (remaining.Count > 0)
+                    {
+                        throw new ExportLocationNotCleanException(_exportLocation, remaining);
+                    }
                 }
             }
             else
@@ -63,13 +130,8 @@ namespace TiaExportBlocks
             FileOps.EnsureDirectory(_exportLocation);
         }
 
-        /// <summary>Files written by the last <see cref="Run"/>.</summary>
+        /// <summary>Files written by the last <see cref="Run"/> (unchanged files skipped by an incremental run are not included).</summary>
         public ICollection<string> WrittenFiles { get { return _written; } }
-
-        private void Written(string path)
-        {
-            _written.Add(Path.GetFullPath(path));
-        }
 
         /// <summary>
         /// After a run: removes anything in the export location that this run did not write (e.g. created by
@@ -111,9 +173,26 @@ namespace TiaExportBlocks
         /// <summary>Exports every open project of every TIA Portal instance.</summary>
         public void Run(IEnumerable<ITiaPortalProcess> processes)
         {
+            _summaries.Clear();
             _written.Clear();
-            RunProcesses(processes);
-            RemoveFilesNotWrittenThisRun();
+            _state = Incremental ? ExportState.Load(StateFile, _log) : new ExportState();
+            _runTempDirectory = Path.Combine(_settings.TempDirectory ?? Path.GetTempPath(), "TiaExportBlocks_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_runTempDirectory);
+            try
+            {
+                RunProcesses(processes);
+                if (!Incremental)
+                {
+                    // Full export: the folder must hold exactly what this run wrote.
+                    RemoveFilesNotWrittenThisRun();
+                }
+            }
+            finally
+            {
+                SaveState();
+                try { FileOps.RemoveDirectory(_runTempDirectory); }
+                catch (Exception exc) { _log.WriteLine("Could not remove temporary folder " + _runTempDirectory + ": " + exc.Message); }
+            }
         }
 
         private void RunProcesses(IEnumerable<ITiaPortalProcess> processes)
@@ -142,13 +221,51 @@ namespace TiaExportBlocks
             }
         }
 
+        private void SaveState()
+        {
+            try
+            {
+                _state.Save(StateFile);
+            }
+            catch (Exception exc)
+            {
+                _log.WriteLine("Could not save incremental state to " + StateFile + ": " + exc.Message + " (next incremental export will export everything)");
+            }
+        }
+
         public void ExportProject(ITiaProject project)
         {
             _log.WriteLine("Handling project " + project.Name);
+            _projectKey = string.IsNullOrEmpty(project.Path) ? project.Name : project.Path;
+            _previous = _state.GetProject(_projectKey);
+            _current = new Dictionary<string, StateEntry>(StringComparer.OrdinalIgnoreCase);
+            _cleanupSafe = true;
+            _summary = new ProjectSummary { Project = project.Name };
+
             foreach (ITiaDevice device in project.Devices)
             {
                 ExportDevice(device);
             }
+
+            if (Incremental)
+            {
+                if (_cleanupSafe)
+                {
+                    RemoveStaleFiles();
+                }
+                else
+                {
+                    // Something could not be read from TIA: its files are unknown this run, so keep everything we had.
+                    _log.WriteLine("Not removing any files: part of the project could not be read");
+                    foreach (var entry in _previous)
+                    {
+                        if (!_current.ContainsKey(entry.Key)) _current[entry.Key] = entry.Value;
+                    }
+                }
+            }
+            _state.SetProject(_projectKey, _current);
+            _summaries.Add(_summary);
+            _log.WriteLine(_summary.ToString());
         }
 
         public void ExportDevice(ITiaDevice device)
@@ -167,6 +284,7 @@ namespace TiaExportBlocks
                 catch (Exception exc)
                 {
                     // One broken device item must not stop the export of everything else.
+                    _cleanupSafe = false;
                     _log.WriteLine("Error handling device item [" + deviceItem.Name + "]: " + exc);
                 }
             }
@@ -211,15 +329,91 @@ namespace TiaExportBlocks
 
         // ---------------- PLC ----------------
 
+        private sealed class Pending<T>
+        {
+            public T Item;
+            public string Name;
+            public string Extension;
+            public string TargetPath;
+            public long Stamp;
+        }
+
         public void ExportPlc(IPlcSoftware software, string rootPrefix)
         {
             _log.WriteLine(software.Name);
-            HandleBlockGroup(software.BlockGroup, string.Empty, rootPrefix);
-            ExportTypes(software, rootPrefix);
-            ExportPlcTagTables(software.TagTableGroup, rootPrefix);
+
+            // Tag tables first: they are always exported, and a change in them (e.g. a renamed tag)
+            // changes the source text of blocks whose own ModifiedDate stays the same.
+            bool tagTablesChanged = ExportPlcTagTables(software.TagTableGroup, rootPrefix);
+
+            var types = CollectTypes(software, rootPrefix);
+            var blocks = new List<Pending<IPlcBlock>>();
+            CollectBlocks(software.BlockGroup, string.Empty, rootPrefix, blocks);
+
+            bool exportAll = !Incremental;
+            if (Incremental)
+            {
+                string plcFolder = PlcFolder(rootPrefix);
+                var previousNames = new HashSet<string>(_previous.Keys.Where(k => IsUnder(k, plcFolder)), StringComparer.OrdinalIgnoreCase);
+                var currentNames = new HashSet<string>(_current.Keys.Where(k => IsUnder(k, plcFolder)), StringComparer.OrdinalIgnoreCase);
+                currentNames.UnionWith(types.Select(t => t.TargetPath));
+                currentNames.UnionWith(blocks.Select(b => b.TargetPath));
+                if (!previousNames.SetEquals(currentNames))
+                {
+                    _log.WriteLine("Blocks, types or tag tables of " + rootPrefix + " were added, removed or renamed since the last export: exporting all its blocks and types");
+                    exportAll = true;
+                }
+                else if (tagTablesChanged)
+                {
+                    _log.WriteLine("Tag tables of " + rootPrefix + " changed since the last export: exporting all its blocks and types");
+                    exportAll = true;
+                }
+            }
+
+            ExportSources(types.Where(t => exportAll || NeedsExport(t)).ToList(), (list, file) => software.GenerateSource(list, file));
+            foreach (var byExtension in blocks.GroupBy(b => b.Extension))
+            {
+                ExportSources(byExtension.Where(b => exportAll || NeedsExport(b)).ToList(), (list, file) => software.GenerateSource(list, file));
+            }
         }
 
-        private void HandleBlockGroup(IPlcBlockGroup blockGroup, string currentPath, string rootPrefix)
+        private string PlcFolder(string rootPrefix)
+        {
+            return Path.GetFullPath(_exportLocation + @"\" + ExportPaths.MakeValidFileName(rootPrefix)) + @"\";
+        }
+
+        private static bool IsUnder(string path, string folderWithSeparator)
+        {
+            return path.StartsWith(folderWithSeparator, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private List<Pending<IPlcType>> CollectTypes(IPlcSoftware software, string rootPrefix)
+        {
+            var result = new List<Pending<IPlcType>>();
+            try
+            {
+                foreach (IPlcType plcType in software.Types)
+                {
+                    _log.WriteLine("Handling type at prefix " + rootPrefix + " named " + plcType.Name);
+                    result.Add(new Pending<IPlcType>
+                    {
+                        Item = plcType,
+                        Name = plcType.Name,
+                        Extension = ".udt",
+                        TargetPath = Path.GetFullPath(ExportPaths.TypeFile(_exportLocation, rootPrefix, plcType.Name)),
+                        Stamp = Stamp(plcType.ModifiedDate),
+                    });
+                }
+            }
+            catch (Exception exc)
+            {
+                _cleanupSafe = false;
+                _log.WriteLine("Error reading PLC data types of " + rootPrefix + ": " + exc.Message);
+            }
+            return result;
+        }
+
+        private void CollectBlocks(IPlcBlockGroup blockGroup, string currentPath, string rootPrefix, List<Pending<IPlcBlock>> result)
         {
             string newPath = ExportPaths.GroupPath(currentPath, blockGroup.Name);
             try
@@ -227,115 +421,199 @@ namespace TiaExportBlocks
                 _log.WriteLine("Handling block group: " + blockGroup.Name);
                 foreach (IPlcBlock block in blockGroup.Blocks)
                 {
-                    HandleBlock(block, newPath, rootPrefix);
+                    string language = block.ProgrammingLanguage;
+                    string extension;
+                    string folderPrefix;
+                    if (!ExportRules.TryGetBlockFormat(language, out extension, out folderPrefix))
+                    {
+                        _log.WriteLine(block.Name + " programming language " + language + " not supported");
+                        continue;
+                    }
+                    result.Add(new Pending<IPlcBlock>
+                    {
+                        Item = block,
+                        Name = block.Name,
+                        Extension = extension,
+                        TargetPath = Path.GetFullPath(ExportPaths.BlockFile(_exportLocation, rootPrefix, folderPrefix, newPath, block.Name, extension)),
+                        Stamp = Stamp(block.ModifiedDate),
+                    });
                 }
                 foreach (IPlcBlockGroup nestedGroup in blockGroup.Groups)
                 {
-                    HandleBlockGroup(nestedGroup, newPath, rootPrefix);
+                    CollectBlocks(nestedGroup, newPath, rootPrefix, result);
                 }
             }
             catch (Exception ex)
             {
+                _cleanupSafe = false;
                 _log.WriteLine("Error handling block group: " + blockGroup.Name + " - " + ex.Message);
             }
         }
 
-        private void HandleBlock(IPlcBlock block, string currentPath, string rootPrefix)
+        private static long Stamp(DateTime? modified)
         {
-            string language = block.ProgrammingLanguage;
-            string extension;
-            string folderPrefix;
-            if (!ExportRules.TryGetBlockFormat(language, out extension, out folderPrefix))
-            {
-                _log.WriteLine(block.Name + " programming language " + language + " not supported");
-                return;
-            }
+            return modified.HasValue ? modified.Value.ToUniversalTime().Ticks : StateEntry.NoStamp;
+        }
 
-            var fileInfo = new FileInfo(ExportPaths.BlockFile(_exportLocation, rootPrefix, folderPrefix, currentPath, block.Name, extension));
-            var fileInfoTemp = new FileInfo(ExportPaths.BlockTempFile(_exportLocation, block.Name, extension));
-            if (!fileInfo.Directory.Exists)
+        /// <summary>
+        /// Incremental check: unchanged when TIA reports the same ModifiedDate as at the last successful export
+        /// and the file on disk still has the content written then.
+        /// </summary>
+        private bool NeedsExport<T>(Pending<T> item)
+        {
+            StateEntry previous;
+            if (item.Stamp != StateEntry.NoStamp
+                && _previous.TryGetValue(item.TargetPath, out previous)
+                && previous.Stamp == item.Stamp
+                && previous.Hash != null
+                && previous.Hash == FileOps.Sha256(item.TargetPath))
             {
-                _log.WriteLine("Creating [" + fileInfo.FullName + "]");
-                Directory.CreateDirectory(fileInfo.Directory.FullName);
+                _current[item.TargetPath] = previous;
+                _summary.Unchanged++;
+                return false;
             }
+            return true;
+        }
+
+        private void ExportSources<T>(List<Pending<T>> items, Action<IList<T>, FileInfo> generate)
+        {
+            if (items.Count == 0) return;
+            string extension = items[0].Extension;
+            for (int start = 0; start < items.Count; start += _settings.BatchSize)
+            {
+                var chunk = items.Skip(start).Take(_settings.BatchSize).ToList();
+                if (chunk.Count > 1 && !_batchDisabled.Contains(extension) && TryExportBatch(chunk, extension, generate))
+                {
+                    continue;
+                }
+                foreach (var item in chunk)
+                {
+                    ExportSingle(item, generate);
+                }
+            }
+        }
+
+        private void ExportSingle<T>(Pending<T> item, Action<IList<T>, FileInfo> generate)
+        {
+            string temp = Path.Combine(_runTempDirectory, ExportPaths.MakeValidFileName(item.Name) + item.Extension);
             try
             {
-                FileOps.DeleteIfExists(fileInfo.FullName);
-                FileOps.DeleteIfExists(fileInfoTemp.FullName);
-                _log.WriteLine("RP [" + rootPrefix + "] Block [" + block.Name + "] prefix [" + currentPath + "] to " + fileInfo.FullName);
-                block.GenerateSource(fileInfoTemp);
-                FileOps.MoveReplacing(fileInfoTemp.FullName, fileInfo.FullName);
-                Written(fileInfo.FullName);
+                FileOps.DeleteIfExists(temp);
+                _log.WriteLine("Generating [" + item.Name + "] to " + item.TargetPath);
+                generate(new List<T> { item.Item }, new FileInfo(temp));
+                FileOps.MoveReplacing(temp, item.TargetPath);
+                RecordSuccess(item.TargetPath, item.Stamp);
             }
             catch (Exception exc)
             {
                 _log.WriteLine(exc.ToString());
-                TryDelete(fileInfoTemp.FullName);
+                TryDelete(temp);
+                RecordFailure(item.TargetPath);
             }
         }
 
-        private void ExportTypes(IPlcSoftware software, string rootPrefix)
+        /// <summary>
+        /// Generates several blocks in one Openness call and splits the result per block. Returns false (caller
+        /// falls back to one call per block) when the call fails or the output can't be split into exactly these
+        /// blocks. The first batch per file type is checked against a single-block export of its first block; if
+        /// the bytes differ, batching is switched off for that file type for the rest of the run.
+        /// </summary>
+        private bool TryExportBatch<T>(List<Pending<T>> chunk, string extension, Action<IList<T>, FileInfo> generate)
         {
-            foreach (IPlcType plcType in software.Types)
-            {
-                _log.WriteLine("Handling type at prefix " + rootPrefix + " named " + plcType.Name);
-                HandleType(plcType, rootPrefix);
-            }
-        }
-
-        private void HandleType(IPlcType plcType, string rootPrefix)
-        {
-            var fileInfo = new FileInfo(ExportPaths.TypeFile(_exportLocation, rootPrefix, plcType.Name));
+            string batchFile = Path.Combine(_runTempDirectory, "batch_" + Guid.NewGuid().ToString("N") + extension);
             try
             {
-                if (!fileInfo.Directory.Exists)
+                _log.WriteLine("Generating " + chunk.Count + " " + extension + " sources in one call");
+                generate(chunk.Select(c => c.Item).ToList(), new FileInfo(batchFile));
+                bool hasBom;
+                string text = FileOps.ReadUtf8(batchFile, out hasBom);
+                List<SourcePart> parts = SourceSplitter.Split(text);
+                if (parts == null || parts.Count != chunk.Count
+                    || !chunk.All(c => parts.Any(p => p.Name == c.Name)))
                 {
-                    Directory.CreateDirectory(fileInfo.Directory.FullName);
+                    _log.WriteLine("Batch output did not split into its " + chunk.Count + " blocks: exporting them one by one");
+                    return false;
                 }
-                if (File.Exists(fileInfo.FullName))
+
+                if (!_batchVerified.Contains(extension) && !VerifyBatchMatchesSingle(chunk[0], parts, hasBom, generate))
                 {
-                    _log.WriteLine("Deleting " + fileInfo.FullName);
-                    File.Delete(fileInfo.FullName);
+                    _batchDisabled.Add(extension);
+                    _log.WriteLine("Batch output for " + extension + " differs from single-block output: batching switched off for " + extension + " in this run");
+                    return false;
                 }
-                plcType.GenerateSource(fileInfo);
-                Written(fileInfo.FullName);
+                _batchVerified.Add(extension);
+
+                foreach (var item in chunk)
+                {
+                    string part = parts.First(p => p.Name == item.Name).Text;
+                    string temp = Path.Combine(_runTempDirectory, ExportPaths.MakeValidFileName(item.Name) + item.Extension);
+                    File.WriteAllBytes(temp, FileOps.EncodeUtf8(part, hasBom));
+                    FileOps.MoveReplacing(temp, item.TargetPath);
+                    RecordSuccess(item.TargetPath, item.Stamp);
+                }
+                return true;
             }
             catch (Exception exc)
             {
-                _log.WriteLine(exc.ToString());
+                _log.WriteLine("Batch export failed (" + exc.Message + "): exporting its blocks one by one");
+                return false;
+            }
+            finally
+            {
+                TryDelete(batchFile);
             }
         }
 
-        private void ExportPlcTagTables(IPlcTagTableGroup group, string rootPrefix)
+        private bool VerifyBatchMatchesSingle<T>(Pending<T> first, List<SourcePart> parts, bool hasBom, Action<IList<T>, FileInfo> generate)
         {
+            string single = Path.Combine(_runTempDirectory, "verify_" + Guid.NewGuid().ToString("N") + first.Extension);
+            try
+            {
+                generate(new List<T> { first.Item }, new FileInfo(single));
+                byte[] expected = File.ReadAllBytes(single);
+                byte[] fromBatch = FileOps.EncodeUtf8(parts.First(p => p.Name == first.Name).Text, hasBom);
+                return expected.SequenceEqual(fromBatch);
+            }
+            finally
+            {
+                TryDelete(single);
+            }
+        }
+
+        private void RecordSuccess(string targetPath, long stamp)
+        {
+            _current[targetPath] = new StateEntry(stamp, FileOps.Sha256(targetPath));
+            _written.Add(Path.GetFullPath(targetPath));
+            _summary.Exported++;
+        }
+
+        /// <summary>
+        /// The export failed. An older export of the element, if any, stays on disk (it is still the element's
+        /// file and must not be cleaned up) but is recorded without a stamp so it is retried next time.
+        /// </summary>
+        private void RecordFailure(string targetPath)
+        {
+            _summary.Failed++;
+            if (File.Exists(targetPath))
+            {
+                _current[targetPath] = new StateEntry(StateEntry.NoStamp, FileOps.Sha256(targetPath));
+                _log.WriteLine("Kept the previous export " + targetPath + "; it may be outdated and is retried on the next run");
+            }
+        }
+
+        /// <summary>Exports all PLC tag tables. Returns true if any of them is new, failed, or differs from the last export.</summary>
+        private bool ExportPlcTagTables(IPlcTagTableGroup group, string rootPrefix)
+        {
+            bool changed = false;
             foreach (IExportableItem table in group.TagTables)
             {
-                ExportPlcTagTable(table, rootPrefix);
+                changed |= ExportXml(table, ExportPaths.PlcTagTableFile(_exportLocation, rootPrefix, table.Name));
             }
             foreach (IPlcTagTableGroup userGroup in group.Groups)
             {
-                ExportPlcTagTables(userGroup, rootPrefix);
+                changed |= ExportPlcTagTables(userGroup, rootPrefix);
             }
-        }
-
-        private void ExportPlcTagTable(IExportableItem table, string rootPrefix)
-        {
-            _log.WriteLine(table.Name);
-            var fileInfoTemp = new FileInfo(ExportPaths.PlcTagTableTempFile(_exportLocation, table.Name));
-            try
-            {
-                FileOps.DeleteIfExists(fileInfoTemp.FullName);
-                table.Export(fileInfoTemp);
-                var fileInfo = new FileInfo(ExportPaths.PlcTagTableFile(_exportLocation, rootPrefix, table.Name));
-                _log.WriteLine(table.Name + " to " + fileInfo.FullName);
-                FileOps.MoveReplacing(fileInfoTemp.FullName, fileInfo.FullName);
-                Written(fileInfo.FullName);
-            }
-            catch (Exception exc)
-            {
-                _log.WriteLine(exc.ToString());
-                TryDelete(fileInfoTemp.FullName);
-            }
+            return changed;
         }
 
         // ---------------- HMI ----------------
@@ -377,20 +655,59 @@ namespace TiaExportBlocks
             }
         }
 
-        private void ExportXml(IExportableItem item, string path)
+        /// <summary>Exports an XML element (always, no stamp). Returns true if the content is new, failed, or differs from the last export.</summary>
+        private bool ExportXml(IExportableItem item, string path)
         {
-            var fileInfo = new FileInfo(path);
+            string target = Path.GetFullPath(path);
+            string temp = ExportPaths.PlcTagTableTempFile(_runTempDirectory, item.Name);
+            _log.WriteLine(item.Name);
             try
             {
-                FileOps.EnsureDirectoryExists(fileInfo.FullName);
-                FileOps.DeleteIfExists(fileInfo.FullName);
-                _log.WriteLine(item.Name + " to " + fileInfo.FullName);
-                item.Export(fileInfo);
-                Written(fileInfo.FullName);
+                FileOps.DeleteIfExists(temp);
+                item.Export(new FileInfo(temp));
+                _log.WriteLine(item.Name + " to " + target);
+                FileOps.MoveReplacing(temp, target);
+                RecordSuccess(target, StateEntry.NoStamp);
+                StateEntry previous;
+                return !_previous.TryGetValue(target, out previous) || previous.Hash != _current[target].Hash;
             }
             catch (Exception exc)
             {
                 _log.WriteLine(exc.ToString());
+                TryDelete(temp);
+                RecordFailure(target);
+                return true;
+            }
+        }
+
+        // ---------------- cleanup ----------------
+
+        /// <summary>
+        /// Deletes files this tool wrote for this project on an earlier run whose element is gone (deleted or
+        /// renamed block, type, tag table, text list, or a removed/renamed PLC or HMI). Files the tool did not
+        /// write, and files another project in the same export location also wrote, are never touched.
+        /// </summary>
+        private void RemoveStaleFiles()
+        {
+            string root = Path.GetFullPath(_exportLocation).TrimEnd('\\') + @"\";
+            foreach (string file in _previous.Keys.Where(k => !_current.ContainsKey(k)).OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!IsUnder(file, root)) continue;
+                if (_state.IsClaimedByOtherProject(file, _projectKey)) continue;
+                try
+                {
+                    if (FileOps.DeleteIfExists(file))
+                    {
+                        _log.WriteLine("Removing " + file + " (no longer in the project)");
+                        _summary.Removed++;
+                    }
+                    FileOps.RemoveEmptyParents(file, _exportLocation);
+                }
+                catch (Exception exc)
+                {
+                    _log.WriteLine("Could not remove " + file + ": " + exc.Message);
+                    _current[file] = _previous[file];
+                }
             }
         }
 

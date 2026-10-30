@@ -25,9 +25,32 @@ GitHub Actions (`.github/workflows/build.yml`) builds the exe on a Windows runne
 
 Because `Siemens.Engineering.dll` is not in this repo, the workflow downloads it from the private repo `cezar1/siemens_tia_engineering_dlls` using a fine-grained token stored in the secret `TIA_DLLS_TOKEN` (read-only "Contents" access to that repo). The DLL for each TIA version goes in its own folder there (`v15_1/Siemens.Engineering.dll`, `v16/...`) and run the workflow manually with that version. The DLL is used only for compiling and is not included in the published zip.
 
+# Usage
+
+    TiaExportBlocks.exe C:\Test [--incremental] [--batch N]
+
+Without options: full export. The export location is emptied and everything is exported, one block per Openness call.
+
+## --batch N
+
+Generates N blocks (or UDTs) per `GenerateSource` call and splits the result back into one file per block, which is much faster (≈330 s → ≈50 s for 500 blocks with `--batch 50`). The split keeps the generated text byte for byte. The first batch of each file type is checked against a single-block export of its first block; if the bytes differ (e.g. another TIA version formats multi-block output differently) batching is switched off for that file type for the rest of the run. A batch that fails (e.g. a know-how protected block) or does not split cleanly into exactly its blocks is exported block by block. N is 1 to 1000.
+
+## --incremental
+
+Keeps the export location and generates a block or UDT again only when needed. A block is skipped only if **all** of these hold:
+
+- TIA reports the same `ModifiedDate` as at its last successful export
+- its file still has exactly the content written then (SHA-256; write times are ignored, so sync tools or git checkouts that only touch files don't cause re-exports)
+- no block, UDT or tag table of that PLC was added, removed or renamed since the last export
+- none of that PLC's tag tables changed (a renamed tag changes the source of blocks whose own `ModifiedDate` does not change)
+
+Tag tables and HMI tag tables/text lists are always exported. A failed export keeps the previous file and is retried on the next run. Afterwards the tool deletes the files it exported earlier whose element is gone (deleted or renamed blocks, UDTs, tag tables, text lists, removed or renamed PLCs/HMIs), and folders left empty. It never deletes files it did not write (README, `.git`, hand-written files) or files another project in the same export location also wrote. If part of a project cannot be read from TIA, nothing is deleted in that run.
+
+State is kept per export location and per project in `%LOCALAPPDATA%\TiaExportBlocks`, outside the export location. A missing or unreadable state simply means everything is exported. Changes that alter generated sources without changing any of the above (e.g. switching the project's editing language) are not detected; run a full export occasionally.
+
 # Clean export guarantee
 
-Every run starts by deleting **everything** inside the export location (the folder itself is kept): read-only, hidden and system files included, files locked by another program retried for about a second. Links (junctions/symlinks) inside it are removed without touching what they point to. If anything still cannot be deleted, the tool stops with exit code 1 and lists the files, without exporting anything. After the export, anything in the export location that the run did not write itself is removed too. The export location therefore always holds exactly the current project state. Drive and share roots (`C:\`, `\\server\share`) are refused as export location.
+Every full (non-incremental) run starts by deleting **everything** inside the export location (the folder itself is kept): read-only, hidden and system files included, files locked by another program retried for about a second. Links (junctions/symlinks) inside it are removed without touching what they point to. If anything still cannot be deleted, the tool stops with exit code 1 and lists the files, without exporting anything. After the export, anything in the export location that the run did not write itself is removed too. The export location therefore always holds exactly the current project state. Drive and share roots (`C:\`, `\\server\share`) are refused as export location.
 
 Exit codes: 0 done, 1 export location could not be emptied, 2 invalid arguments.
 
