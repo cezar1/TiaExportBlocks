@@ -97,7 +97,13 @@ namespace TiaExportBlocks
         public bool Incremental;
         public int BatchSize = 1;
 
-        public const string Usage = @"Usage: TiaExportBlocks.exe C:\Test [--incremental] [--batch N]";
+        /// <summary>Print a per-phase timing table and append the run to a CSV history.</summary>
+        public bool Benchmark;
+
+        /// <summary>CSV history file for --benchmark; null = default (%LOCALAPPDATA%\TiaExportBlocks\benchmark.csv).</summary>
+        public string BenchmarkCsv;
+
+        public const string Usage = @"Usage: TiaExportBlocks.exe C:\Test [--incremental] [--batch N] [--benchmark [--benchmark-csv file.csv]]";
 
         /// <summary>
         /// Exactly one export location is required; it is made absolute and may not be a drive root.
@@ -127,6 +133,21 @@ namespace TiaExportBlocks
                         return false;
                     }
                     result.BatchSize = n;
+                    i++;
+                }
+                else if (string.Equals(arg, "--benchmark", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Benchmark = true;
+                }
+                else if (string.Equals(arg, "--benchmark-csv", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(args[i + 1]))
+                    {
+                        error = "--benchmark-csv needs a file path";
+                        return false;
+                    }
+                    result.BenchmarkCsv = args[i + 1];
+                    result.Benchmark = true;
                     i++;
                 }
                 else if (arg.StartsWith("--", StringComparison.Ordinal))

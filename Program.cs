@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Diagnostics;
 
 namespace TiaExportBlocks
 {
@@ -21,6 +20,7 @@ namespace TiaExportBlocks
                 + (options.Incremental ? " (incremental export)" : " (full export)")
                 + ", batch size " + options.BatchSize);
             var settings = new ExporterSettings { Incremental = options.Incremental, BatchSize = options.BatchSize };
+            DateTime startedUtc = DateTime.UtcNow;
             var exporter = new Exporter(options.ExportLocation, Console.Out, settings);
             try
             {
@@ -32,11 +32,24 @@ namespace TiaExportBlocks
                 return 1;
             }
 
-            var watch = Stopwatch.StartNew();
             exporter.Run(SiemensTia.GetProcesses());
-            watch.Stop();
 
-            Console.WriteLine($"Execution Time: {watch.ElapsedMilliseconds} ms");
+            Benchmark benchmark = exporter.Benchmark;
+            Console.WriteLine($"Execution Time: {(long)benchmark.Total.TotalMilliseconds} ms ({Benchmark.FormatDuration(benchmark.Total)})");
+            if (options.Benchmark)
+            {
+                Console.Write(benchmark.FormatReport());
+                string csv = options.BenchmarkCsv ?? Benchmark.DefaultCsvPath;
+                try
+                {
+                    Benchmark.AppendCsv(csv, benchmark.ToCsvLine(startedUtc, options.ExportLocation, options.Incremental, options.BatchSize, exporter.Summaries));
+                    Console.WriteLine("Benchmark appended to " + csv);
+                }
+                catch (Exception exc)
+                {
+                    Console.WriteLine("WARNING: could not write benchmark to " + csv + ": " + exc.Message);
+                }
+            }
             Console.WriteLine("Done");
             return 0;
         }

@@ -22,6 +22,9 @@ namespace TiaExportBlocks
 
         /// <summary>Parent of the per-run scratch folder TIA writes into. Null: %TEMP%.</summary>
         public string TempDirectory;
+
+        /// <summary>Time source for <see cref="Exporter.Benchmark"/>. Null: a Stopwatch.</summary>
+        public IClock Clock;
     }
 
     /// <summary>Counters for one exported project.</summary>
@@ -33,9 +36,13 @@ namespace TiaExportBlocks
         public int Failed;
         public int Removed;
 
+        /// <summary>Time spent on this project.</summary>
+        public TimeSpan Elapsed;
+
         public override string ToString()
         {
-            return "Exported " + Exported + ", unchanged " + Unchanged + ", failed " + Failed + ", removed " + Removed;
+            return "Exported " + Exported + ", unchanged " + Unchanged + ", failed " + Failed + ", removed " + Removed
+                + " in " + Benchmark.FormatDuration(Elapsed);
         }
     }
 
@@ -64,6 +71,7 @@ namespace TiaExportBlocks
         private readonly TextWriter _log;
         private readonly ExporterSettings _settings;
         private readonly List<ProjectSummary> _summaries = new List<ProjectSummary>();
+        private readonly Benchmark _benchmark;
         private readonly HashSet<string> _written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Per run
@@ -88,10 +96,17 @@ namespace TiaExportBlocks
             _exportLocation = exportLocation;
             _log = log;
             _settings = settings ?? new ExporterSettings();
+            _benchmark = new Benchmark(_settings.Clock ?? new StopwatchClock());
             if (_settings.BatchSize < 1) throw new ArgumentOutOfRangeException("settings", "BatchSize must be at least 1");
         }
 
         public string ExportLocation { get { return _exportLocation; } }
+
+        /// <summary>
+        /// Timing of this exporter's work: total from <see cref="PrepareExportLocation"/> (or <see cref="Run"/>)
+        /// to the end of <see cref="Run"/>, and per phase.
+        /// </summary>
+        public Benchmark Benchmark { get { return _benchmark; } }
 
         /// <summary>Per-project counters of the last <see cref="Run"/>.</summary>
         public IList<ProjectSummary> Summaries { get { return _summaries; } }
@@ -110,6 +125,15 @@ namespace TiaExportBlocks
         /// Incremental export: keeps the previous export. Either way the folder exists afterwards.
         /// </summary>
         public void PrepareExportLocation()
+        {
+            _benchmark.Start();
+            using (_benchmark.Measure(Benchmark.Prepare))
+            {
+                PrepareExportLocationCore();
+            }
+        }
+
+        private void PrepareExportLocationCore()
         {
             if (Directory.Exists(_exportLocation))
             {
@@ -173,6 +197,19 @@ namespace TiaExportBlocks
         /// <summary>Exports every open project of every TIA Portal instance.</summary>
         public void Run(IEnumerable<ITiaPortalProcess> processes)
         {
+            _benchmark.Start();
+            try
+            {
+                RunCore(processes);
+            }
+            finally
+            {
+                _benchmark.Stop();
+            }
+        }
+
+        private void RunCore(IEnumerable<ITiaPortalProcess> processes)
+        {
             _summaries.Clear();
             _written.Clear();
             _state = Incremental ? ExportState.Load(StateFile, _log) : new ExportState();
@@ -184,12 +221,18 @@ namespace TiaExportBlocks
                 if (!Incremental)
                 {
                     // Full export: the folder must hold exactly what this run wrote.
-                    RemoveFilesNotWrittenThisRun();
+                    using (_benchmark.Measure(Benchmark.Cleanup))
+                    {
+                        RemoveFilesNotWrittenThisRun();
+                    }
                 }
             }
             finally
             {
-                SaveState();
+                using (_benchmark.Measure(Benchmark.Cleanup))
+                {
+                    SaveState();
+                }
                 try { FileOps.RemoveDirectory(_runTempDirectory); }
                 catch (Exception exc) { _log.WriteLine("Could not remove temporary folder " + _runTempDirectory + ": " + exc.Message); }
             }
@@ -202,7 +245,11 @@ namespace TiaExportBlocks
             {
                 _log.WriteLine("Process ID " + process.Id);
                 _log.WriteLine("Project PATH " + process.ProjectPath);
-                ITiaPortal tiaPortal = process.Attach();
+                ITiaPortal tiaPortal;
+                using (_benchmark.Measure(Benchmark.Attach))
+                {
+                    tiaPortal = process.Attach();
+                }
                 if (tiaPortal == null)
                 {
                     _log.WriteLine("Failed to attach to TIA Portal.");
@@ -241,6 +288,7 @@ namespace TiaExportBlocks
             _current = new Dictionary<string, StateEntry>(StringComparer.OrdinalIgnoreCase);
             _cleanupSafe = true;
             _summary = new ProjectSummary { Project = project.Name };
+            TimeSpan projectStart = _benchmark.Total;
 
             foreach (ITiaDevice device in project.Devices)
             {
@@ -251,7 +299,10 @@ namespace TiaExportBlocks
             {
                 if (_cleanupSafe)
                 {
-                    RemoveStaleFiles();
+                    using (_benchmark.Measure(Benchmark.Cleanup))
+                    {
+                        RemoveStaleFiles();
+                    }
                 }
                 else
                 {
@@ -264,6 +315,7 @@ namespace TiaExportBlocks
                 }
             }
             _state.SetProject(_projectKey, _current);
+            _summary.Elapsed = _benchmark.Total - projectStart;
             _summaries.Add(_summary);
             _log.WriteLine(_summary.ToString());
         }
@@ -500,7 +552,10 @@ namespace TiaExportBlocks
             {
                 FileOps.DeleteIfExists(temp);
                 _log.WriteLine("Generating [" + item.Name + "] to " + item.TargetPath);
-                generate(new List<T> { item.Item }, new FileInfo(temp));
+                using (_benchmark.Measure(Benchmark.GenerateSource, 1))
+                {
+                    generate(new List<T> { item.Item }, new FileInfo(temp));
+                }
                 FileOps.MoveReplacing(temp, item.TargetPath);
                 RecordSuccess(item.TargetPath, item.Stamp);
             }
@@ -524,7 +579,10 @@ namespace TiaExportBlocks
             try
             {
                 _log.WriteLine("Generating " + chunk.Count + " " + extension + " sources in one call");
-                generate(chunk.Select(c => c.Item).ToList(), new FileInfo(batchFile));
+                using (_benchmark.Measure(Benchmark.GenerateSource, chunk.Count))
+                {
+                    generate(chunk.Select(c => c.Item).ToList(), new FileInfo(batchFile));
+                }
                 bool hasBom;
                 string text = FileOps.ReadUtf8(batchFile, out hasBom);
                 List<SourcePart> parts = SourceSplitter.Split(text);
@@ -569,7 +627,10 @@ namespace TiaExportBlocks
             string single = Path.Combine(_runTempDirectory, "verify_" + Guid.NewGuid().ToString("N") + first.Extension);
             try
             {
-                generate(new List<T> { first.Item }, new FileInfo(single));
+                using (_benchmark.Measure(Benchmark.BatchVerification, 1))
+                {
+                    generate(new List<T> { first.Item }, new FileInfo(single));
+                }
                 byte[] expected = File.ReadAllBytes(single);
                 byte[] fromBatch = FileOps.EncodeUtf8(parts.First(p => p.Name == first.Name).Text, hasBom);
                 return expected.SequenceEqual(fromBatch);
@@ -664,7 +725,10 @@ namespace TiaExportBlocks
             try
             {
                 FileOps.DeleteIfExists(temp);
-                item.Export(new FileInfo(temp));
+                using (_benchmark.Measure(Benchmark.ExportXml, 1))
+                {
+                    item.Export(new FileInfo(temp));
+                }
                 _log.WriteLine(item.Name + " to " + target);
                 FileOps.MoveReplacing(temp, target);
                 RecordSuccess(target, StateEntry.NoStamp);
