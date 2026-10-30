@@ -296,11 +296,14 @@ namespace TiaExportBlocks.Tests
             string locked = Path.Combine(export, "busy.scl");
             Write(locked, "x");
             var stream = new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None);
-            var release = System.Threading.Tasks.Task.Run(() => { System.Threading.Thread.Sleep(150); stream.Dispose(); });
+            // Dedicated thread (not the thread pool, which can be busy with parallel tests) releases the lock
+            // shortly after the first delete attempt; the retry window is generous.
+            var release = new System.Threading.Thread(() => { System.Threading.Thread.Sleep(100); stream.Dispose(); });
+            release.Start();
 
-            var remaining = FileOps.WipeDirectoryContents(export, attempts: 20, retryDelayMs: 50);
+            var remaining = FileOps.WipeDirectoryContents(export, attempts: 100, retryDelayMs: 50);
 
-            release.Wait();
+            release.Join();
             Assert.Empty(remaining);
             Assert.Empty(Directory.GetFileSystemEntries(export));
         }
