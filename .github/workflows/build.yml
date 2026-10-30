@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tia_version:
+        description: 'TIA Openness version folder (V15_1, V16, ...)'
+        required: false
+        default: 'V15_1'
+
+permissions:
+  contents: write   # needed to attach the exe to a GitHub Release on tag pushes
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      TIA_VERSION: ${{ github.event.inputs.tia_version || 'V15_1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      # Siemens.Engineering.dll is proprietary and not committed here. It lives in the private
+      # repo cezar1/siemens_tia_engineering_dlls, read with a fine-grained PAT stored as secret TIA_DLLS_TOKEN.
+      # Layout: <version, lowercase>/Siemens.Engineering.dll, e.g. v15_1/, v16/
+      - name: Checkout Siemens DLLs (private)
+        uses: actions/checkout@v4
+        with:
+          repository: cezar1/siemens_tia_engineering_dlls
+          token: ${{ secrets.TIA_DLLS_TOKEN }}
+          path: tia-dlls
+          lfs: true
+
+      - name: Place Siemens.Engineering.dll
+        shell: pwsh
+        run: |
+          $src = "tia-dlls/$($env:TIA_VERSION.ToLower())/Siemens.Engineering.dll"
+          if (-not (Test-Path $src)) { Write-Error "No Siemens.Engineering.dll found for $env:TIA_VERSION in siemens_tia_engineering_dlls"; exit 1 }
+          $dest = "dll/$env:TIA_VERSION/Siemens.Engineering.dll"
+          New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+          Copy-Item $src $dest
+          Remove-Item -Recurse -Force tia-dlls
+          Get-Item $dest | Select-Object Name, Length, @{n='Version';e={$_.VersionInfo.FileVersion}}
+
+      - name: Build (Release)
+        run: msbuild TiaExportBlocks.csproj /p:Configuration=Release /p:Platform=AnyCPU /p:TiaVersion=${{ env.TIA_VERSION }} /m /v:minimal
+
+      # Package only our own outputs — the Siemens DLL is deliberately left out,
+      # users drop in the one matching their TIA installation (see README).
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item bin/Release/TiaExportBlocks.exe, bin/Release/TiaExportBlocks.exe.config, LICENSE.txt, README.md $out
+          Compress-Archive -Path "$out/*" -DestinationPath "TiaExportBlocks-$env:TIA_VERSION.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TiaExportBlocks-${{ env.TIA_VERSION }}
+          path: dist/
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: TiaExportBlocks-${{ env.TIA_VERSION }}.zip
