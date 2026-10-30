@@ -16,6 +16,8 @@ namespace TiaExportBlocks.Tests
     {
         private readonly string _sandbox;
         private readonly string _export;
+        private readonly string _stateDir;
+        private readonly string _tempDir;
         private readonly StringWriter _log = new StringWriter();
         private readonly FakeTia _tia = new FakeTia();
 
@@ -23,6 +25,8 @@ namespace TiaExportBlocks.Tests
         {
             _sandbox = Path.Combine(Path.GetTempPath(), "TiaExporterTests_" + Guid.NewGuid().ToString("N"));
             _export = Path.Combine(_sandbox, "export");
+            _stateDir = Path.Combine(_sandbox, "state");
+            _tempDir = Path.Combine(_sandbox, "tmp");
             Directory.CreateDirectory(_sandbox);
         }
 
@@ -35,7 +39,7 @@ namespace TiaExportBlocks.Tests
 
         private Exporter NewExporter()
         {
-            return new Exporter(_export, _log);
+            return new Exporter(_export, _log, new ExporterSettings { StateDirectory = _stateDir, TempDirectory = _tempDir });
         }
 
         private void Run(params ITiaPortalProcess[] processes)
@@ -302,35 +306,33 @@ namespace TiaExportBlocks.Tests
             Run(OneProject(_tia.S71500Station("S", "PLC_1", plc)));
 
             var shortCalls = _tia.Calls.Select(c => c.Split(new[] { " -> " }, StringSplitOptions.None)[0]).ToList();
+            // Tag tables first (their changes decide incremental behaviour), then types, then blocks per file type.
             Assert.Equal(new[]
             {
                 "Attach 1",
                 "GetSoftware PLC_1",
+                "Export Tags",
+                "GenerateSource UDT1",
                 "GenerateSource Main",
                 "GenerateSource DB1",
-                "GenerateSource UDT1",
-                "Export Tags",
             }, shortCalls);
         }
 
         [Fact]
-        public void Run_BlocksAreGeneratedIntoTempFileInsideExportFolder_ThenMoved()
+        public void Run_TiaWritesIntoPerRunScratchFolder_WhichIsRemovedAfterwards()
         {
-            Run(OneProject(_tia.S71500Station("S", "PLC_1", _tia.Plc("PLC_1").WithBlocks(_tia.Scl("Main")))));
+            Run(OneProject(_tia.S71500Station("S", "PLC_1", _tia.Plc("PLC_1")
+                .WithBlocks(_tia.Scl("Main"))
+                .WithTagTables(_tia.PlcTagTable("Tags")))));
 
             string generate = _tia.CallsStartingWith("GenerateSource Main").Single();
-            Assert.EndsWith(" -> " + Path.Combine(_export, "Main.scl"), generate);
-            Assert.False(File.Exists(Path.Combine(_export, "Main.scl")), "temp file must be moved away");
-            Assert.Equal(new[] { "export" }, Directory.GetFileSystemEntries(_sandbox).Select(Path.GetFileName));
-        }
-
-        [Fact]
-        public void Run_TagTablesAreExportedToTempFileThenMoved()
-        {
-            Run(OneProject(_tia.S71500Station("S", "PLC_1", _tia.Plc("PLC_1").WithTagTables(_tia.PlcTagTable("Tags")))));
-
-            Assert.EndsWith(" -> " + Path.Combine(_export, "Tags.xml"), _tia.CallsStartingWith("Export Tags").Single());
-            Assert.Equal(new[] { @"PLC_1\tag_tables\xml\Tags.xml" }, ExportedFiles());
+            string export = _tia.CallsStartingWith("Export Tags").Single();
+            string scratch = Path.GetDirectoryName(generate.Split(new[] { " -> " }, StringSplitOptions.None)[1]);
+            Assert.StartsWith(_tempDir + @"\TiaExportBlocks_", scratch);
+            Assert.Contains(" -> " + scratch + @"\", export);
+            Assert.False(Directory.Exists(scratch), "scratch folder must be removed");
+            Assert.Empty(Directory.GetFiles(_export));
+            Assert.Equal(new[] { @"PLC_1\scl\Program blocks\Main.scl", @"PLC_1\tag_tables\xml\Tags.xml" }, ExportedFiles());
         }
 
         [Fact]

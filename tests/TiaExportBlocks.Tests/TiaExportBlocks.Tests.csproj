@@ -13,6 +13,7 @@
     <Compile Include="..\..\ExportLogic.cs" Link="Production\ExportLogic.cs" />
     <Compile Include="..\..\TiaModel.cs" Link="Production\TiaModel.cs" />
     <Compile Include="..\..\Exporter.cs" Link="Production\Exporter.cs" />
+    <Compile Include="..\..\ExportState.cs" Link="Production\ExportState.cs" />
   </ItemGroup>
 
   <ItemGroup>
