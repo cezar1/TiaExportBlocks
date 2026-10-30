@@ -346,7 +346,7 @@ namespace TiaExportBlocks.Tests
 
             _h.Incremental(Project());
 
-            Assert.Contains("Tag tables of PLC_1 changed", _h.Log);
+            Assert.Contains("Incremental: tag tables of PLC_1 changed", _h.Log);
             Assert.Equal(new[] { "UDT_Motor", "Main", "DB_Recipe" }, _h.Generated());
             Assert.Contains("\"StartButton\" := TRUE;", _h.Read(MainFile));
         }
