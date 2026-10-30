@@ -32,7 +32,7 @@ jobs:
 
       # Unit tests need neither the Siemens DLL nor TIA Portal, so they run first.
       - name: Unit tests
-        run: dotnet test tests/TiaExportBlocks.Tests/TiaExportBlocks.Tests.csproj -c Release --logger "console;verbosity=normal" --logger "trx;LogFileName=unit-tests.trx" --results-directory TestResults
+        run: dotnet test tests/TiaExportBlocks.Tests/TiaExportBlocks.Tests.csproj -c Release --logger "console;verbosity=normal" --logger "trx;LogFileName=unit-tests.trx" --logger GitHubActions --results-directory TestResults
 
       - name: Upload test results
         if: always()
