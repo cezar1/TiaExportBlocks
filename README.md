@@ -24,3 +24,9 @@ The release 0.1 includes the exe file compiled in Visual Studio 2019 with the Si
 GitHub Actions (`.github/workflows/build.yml`) builds the exe on a Windows runner on every push/PR, uploads it as a workflow artifact, and attaches a zip to the GitHub Release when a `v*` tag is pushed.
 
 Because `Siemens.Engineering.dll` is not in this repo, the workflow downloads it from the private repo `cezar1/siemens_tia_engineering_dlls` using a fine-grained token stored in the secret `TIA_DLLS_TOKEN` (read-only "Contents" access to that repo). The DLL for each TIA version goes in its own folder there (`v15_1/Siemens.Engineering.dll`, `v16/...`) and run the workflow manually with that version. The DLL is used only for compiling and is not included in the published zip.
+
+# Unit tests
+
+`tests/TiaExportBlocks.Tests` (xUnit, .NET Framework 4.8) covers everything that does not need TIA Portal: export folder layout and file names, file name sanitizing, which block languages are exported, PLC/HMI device classification, argument handling and the file replace steps around each export. That logic lives in `ExportLogic.cs`; `Program.cs` keeps only the calls into the Siemens Openness API, which can only be exercised against a running TIA Portal.
+
+Run locally with `dotnet test tests/TiaExportBlocks.Tests` (or Test Explorer in Visual Studio). CI runs them on every push and PR before the exe is built.

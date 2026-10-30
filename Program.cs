@@ -21,30 +21,18 @@ namespace TiaExportBlocks
 {
     class Program
     {
-        static Dictionary<string, string> programLanguageToExtension = new Dictionary<string, string> { { "SCL", ".scl" }, { "DB", ".db" }, { "STL", ".awl" }};
-        static Dictionary<string, string> programLanguageToFolderPrefixExtension = new Dictionary<string, string> { { "SCL", @"\scl\" }, { "DB", @"\db\" }, { "STL", @"\stl\" } };
         static string exportLocation;
         static void HandleBlock(PlcBlock block,PlcSoftware software, string currentPath, string rootPrefix)
         {
             PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
             //Console.WriteLine(block.Name + " " + block.GetType()+ " " +block.ProgrammingLanguage);
             string block_programming_language=block.ProgrammingLanguage.ToString();
-            if (programLanguageToExtension.ContainsKey(block_programming_language))
+            string extension;
+            string folder_prefix;
+            if (ExportRules.TryGetBlockFormat(block_programming_language, out extension, out folder_prefix))
             {
-                string extension;
-                programLanguageToExtension.TryGetValue(block.ProgrammingLanguage.ToString(),out extension);
-                string folder_prefix;
-                programLanguageToFolderPrefixExtension.TryGetValue(block.ProgrammingLanguage.ToString(), out folder_prefix);
-                // Convert the folder structure to a valid path
-                string[] folderStructure = currentPath.Split('\\');
-                for (int i = 0; i < folderStructure.Length; i++)
-                {
-                    folderStructure[i] = MakeValidFileName(folderStructure[i]);
-                }
-                string sanitizedCurrentPath= Path.Combine(folderStructure);
-                var fileInfo = new FileInfo(exportLocation+@"\"+ rootPrefix+@"\"+Path.Combine(folder_prefix, sanitizedCurrentPath, MakeValidFileName(block.Name)+ extension));
-                var fileInfoTemp = new FileInfo(exportLocation + MakeValidFileName(block.Name) + extension);
-                //var fileInfo = new FileInfo(exportLocation + folder_prefix+ '\\' + sanitizedFolderPrefix + '\\' +MakeValidFileName(block.Name) + extension);
+                var fileInfo = new FileInfo(ExportPaths.BlockFile(exportLocation, rootPrefix, folder_prefix, currentPath, block.Name, extension));
+                var fileInfoTemp = new FileInfo(ExportPaths.BlockTempFile(exportLocation, block.Name, extension));
                 if (!fileInfo.Directory.Exists)
                 {
                     Console.WriteLine("Creating [" + fileInfo.FullName + "]");
@@ -53,10 +41,10 @@ namespace TiaExportBlocks
                 var blocks = new List<PlcBlock>() { block };
                 try
                 {
-                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    FileOps.DeleteIfExists(fileInfo.FullName);
                     Console.WriteLine("RP ["+ rootPrefix + "] Block [" + block.Name + "] prefix [" + currentPath + "] to " + fileInfo.FullName);
                     externalSourceGroup.GenerateSource(blocks, fileInfoTemp, GenerateOptions.None);
-                    File.Move(fileInfoTemp.FullName, fileInfo.FullName);
+                    FileOps.MoveReplacing(fileInfoTemp.FullName, fileInfo.FullName);
                 }
                 catch (Exception exc)
                 {
@@ -71,7 +59,7 @@ namespace TiaExportBlocks
         }
         static void HandleBlockGroup(PlcBlockGroup blockGroup, PlcSoftware software, string currentPath, string rootPrefix)
         {
-            string newPath = Path.Combine(currentPath, MakeValidFileName(blockGroup.Name));
+            string newPath = ExportPaths.GroupPath(currentPath, blockGroup.Name);
             try
             {
                 Console.WriteLine("Handling block group: " + blockGroup.Name);
@@ -93,21 +81,10 @@ namespace TiaExportBlocks
                 Console.WriteLine("Error handling block group: " + blockGroup.Name + " - " + ex.Message);
             }
         }
-        static string MakeValidFileName(string name)
-        {
-            // Replace invalid characters with an underscore
-            char[] invalidChars = Path.GetInvalidFileNameChars();
-            foreach (char c in invalidChars)
-            {
-                name = name.Replace(c, '_');
-            }
-            return name;
-        }
         static void HandleType(PlcType plcType, PlcSoftware software,string rootPrefix)
         {
             PlcExternalSourceSystemGroup externalSourceGroup = software.ExternalSourceGroup;
-            string extension=".udt";
-            var fileInfo = new FileInfo(exportLocation + @"\" + rootPrefix + @"\udt\" + plcType.Name + extension);
+            var fileInfo = new FileInfo(ExportPaths.TypeFile(exportLocation, rootPrefix, plcType.Name));
             var blocks = new List<PlcType>() { plcType };
             try
             {
@@ -155,31 +132,17 @@ namespace TiaExportBlocks
                 HandleType(plcType, software, rootPrefix);
             }
         }
-        public static void EnsureDirectoryExists(string filePath)
-        {
-            // Extract the directory part from the file path
-            string directoryPath = Path.GetDirectoryName(filePath);
-
-            if (!string.IsNullOrEmpty(directoryPath))
-            {
-                // Ensure the directory exists
-                Directory.CreateDirectory(directoryPath);
-            }
-        }
         private static void ExportTagTables(PlcTagTableComposition tagTables, string rootPrefix)
         {
             foreach (PlcTagTable table in tagTables)
             {
                 Console.WriteLine(table.Name);
-                var fileInfoTemp = new FileInfo(exportLocation +@"\"+ MakeValidFileName(table.Name) + ".xml");
-                if (File.Exists(fileInfoTemp.FullName)) File.Delete(fileInfoTemp.FullName);
+                var fileInfoTemp = new FileInfo(ExportPaths.PlcTagTableTempFile(exportLocation, table.Name));
+                FileOps.DeleteIfExists(fileInfoTemp.FullName);
                 table.Export(fileInfoTemp, ExportOptions.WithDefaults);
-                string filePath = exportLocation +@"\"+ rootPrefix+@"\tag_tables\xml\"  + @"\" + table.Name + ".xml";
-                var fileInfo = new FileInfo(filePath);
+                var fileInfo = new FileInfo(ExportPaths.PlcTagTableFile(exportLocation, rootPrefix, table.Name));
                 Console.WriteLine(table.Name + " to " + fileInfo.FullName);
-                EnsureDirectoryExists(filePath);
-                if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
-                File.Move(fileInfoTemp.FullName, fileInfo.FullName);
+                FileOps.MoveReplacing(fileInfoTemp.FullName, fileInfo.FullName);
             }
         }
         private static void ExportUserGroupDeep(PlcTagTableUserGroup group, string rootPrefix)
@@ -215,11 +178,10 @@ namespace TiaExportBlocks
             TagTableComposition tables = folderToExport.TagTables; 
             foreach (TagTable table in tables) 
             {
-                string extension = ".xml";
-                var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                var fileInfo = new FileInfo(ExportPaths.HmiTagTableFile(exportLocation, table.Name));
                 try
                 {
-                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    FileOps.DeleteIfExists(fileInfo.FullName);
                     Console.WriteLine(table.Name + " to " + fileInfo.FullName);
                     table.Export(fileInfo, ExportOptions.WithDefaults);
                 }
@@ -234,11 +196,10 @@ namespace TiaExportBlocks
             TagTableComposition tables = folderToExport.TagTables; 
             foreach (TagTable table in tables) 
             {
-                string extension = ".xml";
-                var fileInfo = new FileInfo(exportLocation + @"\hmi_tag_tables\xml\" + table.Name + extension);
+                var fileInfo = new FileInfo(ExportPaths.HmiTagTableFile(exportLocation, table.Name));
                 try
                 {
-                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    FileOps.DeleteIfExists(fileInfo.FullName);
                     Console.WriteLine(table.Name + " to " + fileInfo.FullName);
                     table.Export(fileInfo, ExportOptions.WithDefaults);
                 }
@@ -254,11 +215,10 @@ namespace TiaExportBlocks
             TextListComposition text = hmitarget.TextLists;    
             foreach (TextList textList in text)    
             {
-                string extension = ".xml";
-                var fileInfo = new FileInfo(exportLocation + @"\hmi_text_lists\xml\" + textList.Name + extension);
+                var fileInfo = new FileInfo(ExportPaths.HmiTextListFile(exportLocation, textList.Name));
                 try
                 {
-                    if (File.Exists(fileInfo.FullName)) File.Delete(fileInfo.FullName);
+                    FileOps.DeleteIfExists(fileInfo.FullName);
                     Console.WriteLine(textList.Name + " to " + fileInfo.FullName);
                     textList.Export(fileInfo, ExportOptions.WithDefaults);
                 }
@@ -274,21 +234,22 @@ namespace TiaExportBlocks
             if (Directory.Exists(path))
             {
                 Console.WriteLine("Deleting location " + path + ".");
-                Directory.Delete(path,true);
             }
+            FileOps.RemoveDirectory(path);
         }
         private static void CheckDirectory(string path)
         {
             if (!Directory.Exists(path))
             {
                 Console.WriteLine("Export location "+path+" does not exist");
-                Directory.CreateDirectory(path);
             }
+            FileOps.EnsureDirectory(path);
         }                
             static void Main(string[] args)
         {
 
-            if (args == null || args.Length == 0 || args.Length>1)
+            string parsedExportLocation;
+            if (!ExportRules.TryParseArgs(args, out parsedExportLocation))
             {
                 Console.WriteLine("No arguments provided");
                 Console.WriteLine(@"Usage TiaExportBlocks.exe C:\Test");
@@ -296,7 +257,7 @@ namespace TiaExportBlocks
             }
             else
             {
-                exportLocation = args[0];
+                exportLocation = parsedExportLocation;
                 Console.WriteLine("Export location is " + exportLocation);
                 RemoveDirectory(exportLocation);
                 CheckDirectory(exportLocation);
@@ -326,12 +287,12 @@ namespace TiaExportBlocks
                         {
                             Console.WriteLine("Handling device " + device.Name + " of type [" + device.TypeIdentifier+"]");
                             
-                            if (device.TypeIdentifier == "System:Device.S71500")
+                            if (ExportRules.IsS71500(device.TypeIdentifier))
                             {
                                 foreach (Siemens.Engineering.HW.DeviceItem deviceItem in device.DeviceItems)
                                 {
                                     Console.WriteLine("Handling device item " + deviceItem.Name + " of type " + deviceItem.TypeIdentifier);
-                                    if (deviceItem.Name.Contains("PLC"))
+                                    if (ExportRules.IsPlcDeviceItem(deviceItem.Name))
                                     {
                                         Console.WriteLine("Handling PLC device item");
                                         Siemens.Engineering.HW.Features.SoftwareContainer softwareContainer = ((IEngineeringServiceProvider)deviceItem).GetService<SoftwareContainer>();
