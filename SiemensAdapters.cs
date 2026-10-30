@@ -144,6 +144,20 @@ namespace TiaExportBlocks
 
     internal static class SiemensAttributes
     {
+        /// <summary>A boolean attribute; false when it cannot be read.</summary>
+        public static bool Flag(IEngineeringObject engineeringObject, string attribute)
+        {
+            try
+            {
+                object value = engineeringObject.GetAttribute(attribute);
+                return value is bool && (bool)value;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         /// <summary>The "ModifiedDate" attribute, or null when it cannot be read (the element is then always exported).</summary>
         public static DateTime? ModifiedDate(IEngineeringObject engineeringObject)
         {
@@ -185,6 +199,7 @@ namespace TiaExportBlocks
         public string Name { get { return _block.Name; } }
         public string ProgrammingLanguage { get { return _block.ProgrammingLanguage.ToString(); } }
         public DateTime? ModifiedDate { get { return SiemensAttributes.ModifiedDate(_block); } }
+        public bool IsKnowHowProtected { get { return SiemensAttributes.Flag(_block, "IsKnowHowProtected"); } }
     }
 
     internal sealed class PlcTypeAdapter : IPlcType

@@ -327,11 +327,11 @@ namespace TiaExportBlocks.Tests.Fakes
         {
             var fakes = blocks.Cast<FakeBlock>().ToList();
             foreach (var b in fakes) if (b.OnGenerate != null) b.OnGenerate();
-            var unsupported = fakes.FirstOrDefault(b => !(b.ProgrammingLanguage == "SCL" || b.ProgrammingLanguage == "DB" || b.ProgrammingLanguage == "STL"));
+            var unsupported = fakes.FirstOrDefault(b => b.IsKnowHowProtected || !(b.ProgrammingLanguage == "SCL" || b.ProgrammingLanguage == "DB" || b.ProgrammingLanguage == "STL"));
             if (unsupported != null)
             {
                 _tia.Record("GenerateSource " + string.Join(",", fakes.Select(b => b.Name)) + " -> " + target.FullName);
-                throw new FakeOpennessException("Source generation is not supported for " + unsupported.ProgrammingLanguage + " blocks.");
+                throw new FakeOpennessException(FakeBlock.RefusedMessage);
             }
             _tia.GenerateSources(fakes.Select(b => b.Name).ToList(), fakes.Select(b => b.ExpectedSource).ToList(),
                 fakes.Select(b => b.Fail).ToList(), fakes.Any(b => b.Fail != null && b.WritePartialFileBeforeFailing), target);
@@ -425,6 +425,20 @@ namespace TiaExportBlocks.Tests.Fakes
 
         /// <summary>TIA "ModifiedDate"; null simulates an attribute that cannot be read.</summary>
         public DateTime? ModifiedDate { get; set; }
+
+        public bool IsKnowHowProtected { get; set; }
+
+        /// <summary>TIA's actual message when a block can't be generated as source.</summary>
+        public const string RefusedMessage = "Error when calling method 'GenerateSource' of type 'Siemens.Engineering.SW.ExternalSources.PlcExternalSourceSystemGroup'.\r\n\r\n"
+            + "Select a block that only includes SCL or STL and is not know-how protected.\r\n"
+            + "External source files can only be generated when all selected code blocks have been created in SCL or STL.";
+
+        /// <summary>A block TIA refuses to generate, e.g. SCL with a LAD network, as in a real project.</summary>
+        public FakeBlock Refused()
+        {
+            Fail = new FakeOpennessException(RefusedMessage);
+            return this;
+        }
 
         /// <summary>Extra line in the generated source, e.g. a tag name TIA shows (changes without touching ModifiedDate).</summary>
         public string Body = "#Enable := #Enable;";

@@ -99,7 +99,7 @@ namespace TiaExportBlocks.Tests
         {
             _h.Run(false, 50, BuildProject(_h.Tia, plc => plc.Root.With(_h.Tia.Scl("FB_Protected").Failing("know-how protected"))));
 
-            Assert.Contains("Batch export failed (know-how protected): exporting its blocks one by one", _h.Log);
+            Assert.Contains("sources failed (know-how protected): splitting it to find the block(s) TIA refuses", _h.Log);
             Assert.Contains("know-how protected", _h.Log);
             Assert.False(System.IO.File.Exists(_h.PathOf(@"PLC_1\scl\Program blocks\FB_Protected.scl")));
             AssertSameFilesAsSingleBlockExport();
@@ -140,6 +140,87 @@ namespace TiaExportBlocks.Tests
             var sclBatchCalls = _h.Tia.CallsStartingWith("GenerateSource FB_").Count(c => c.Contains(","));
             Assert.Equal(1, sclBatchCalls); // no further batches after the mismatch
             AssertSameFilesAsSingleBlockExport();
+        }
+
+        // ---------------- a block TIA refuses inside a batch (reported on 0.2) ----------------
+
+        private FakeProcess Blocks(FakeTia tia, int count, params int[] refused)
+        {
+            var plc = tia.Plc("PLC_1").WithBlocks(Enumerable.Range(1, count)
+                .Select(i => refused.Contains(i) ? tia.Scl("FB_" + i).Refused() : tia.Scl("FB_" + i)).ToArray());
+            return tia.Process(1, tia.Project("Line3", tia.S71500Station("S", "PLC_1", plc)));
+        }
+
+        private static int BlocksInCall(string call)
+        {
+            return call.Split(new[] { " -> " }, StringSplitOptions.None)[0].Split(',').Length;
+        }
+
+        [Fact]
+        public void RefusedBlock_IsIsolatedBySplitting_NotByExportingTheWholeBatchOneByOne()
+        {
+            _h.Run(false, 50, Blocks(_h.Tia, 50, 31));
+
+            // 1 failed call of 50, then halves: ~2·log2(50) calls, far fewer than 50 single calls
+            Assert.InRange(_h.Tia.GenerateSourceCalls, 2, 16);
+            Assert.Equal(49, _h.ExportedFiles().Count);
+            Assert.DoesNotContain(@"PLC_1\scl\Program blocks\FB_31.scl", _h.ExportedFiles());
+            Assert.Contains("Could not generate [FB_31]: Error when calling method 'GenerateSource'", _h.Log);
+            Assert.Contains("Select a block that only includes SCL or STL", _h.Log);
+            Assert.DoesNotContain("   at ", _h.Log); // no stack traces for refused blocks
+            Assert.Equal(1, _h.LastExporter.Summaries.Single().Failed);
+        }
+
+        [Fact]
+        public void RefusedBlock_OnlyItsOwnBatchIsSplit_LaterBatchesStayWhole()
+        {
+            _h.Run(false, 10, Blocks(_h.Tia, 30, 3));
+
+            var calls = _h.Tia.CallsStartingWith("GenerateSource ").ToList();
+            Assert.Contains(calls, c => c.StartsWith("GenerateSource FB_11,") && BlocksInCall(c) == 10);
+            Assert.Contains(calls, c => c.StartsWith("GenerateSource FB_21,") && BlocksInCall(c) == 10);
+            Assert.DoesNotContain("batching switched off", _h.Log);
+            Assert.Equal(29, _h.ExportedFiles().Count);
+        }
+
+        [Fact]
+        public void SeveralRefusedBlocks_AllOthersExported()
+        {
+            _h.Run(false, 50, Blocks(_h.Tia, 40, 1, 17, 18, 40));
+
+            Assert.Equal(36, _h.ExportedFiles().Count);
+            Assert.Equal(4, _h.LastExporter.Summaries.Single().Failed);
+            Assert.True(_h.Tia.GenerateSourceCalls < 40, "calls: " + _h.Tia.GenerateSourceCalls);
+        }
+
+        [Fact]
+        public void RefusedBlock_SplitResultIsByteIdenticalToSingleExport()
+        {
+            _h.Run(false, 50, Blocks(_h.Tia, 20, 7));
+            _reference.Run(false, 1, Blocks(_reference.Tia, 20, 7));
+
+            Assert.Equal(_reference.ExportedFiles(), _h.ExportedFiles());
+            foreach (var f in _reference.ExportedFiles())
+            {
+                Assert.True(_reference.Bytes(f).SequenceEqual(_h.Bytes(f)), f);
+            }
+        }
+
+        [Fact]
+        public void KnowHowProtectedBlock_IsSkippedBeforeAskingTia()
+        {
+            var tia = _h.Tia;
+            var plc = tia.Plc("PLC_1").WithBlocks(Enumerable.Range(1, 10).Select(i => tia.Scl("FB_" + i)).ToArray());
+            var protectedBlock = tia.Scl("FB_Protected");
+            protectedBlock.IsKnowHowProtected = true;
+            plc.Root.With(protectedBlock);
+
+            _h.Run(false, 50, tia.Process(1, tia.Project("Line3", tia.S71500Station("S", "PLC_1", plc))));
+
+            Assert.Contains("FB_Protected is know-how protected: TIA cannot generate its source, skipped", _h.Log);
+            Assert.DoesNotContain(_h.Tia.Calls, c => c.Contains("FB_Protected"));
+            Assert.Equal(2, _h.Tia.GenerateSourceCalls); // one batch of 10 + verification
+            Assert.Equal(10, _h.ExportedFiles().Count);
         }
 
         [Fact]
