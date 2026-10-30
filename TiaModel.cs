@@ -87,6 +87,9 @@ namespace TiaExportBlocks
 
         /// <summary>The "ModifiedDate" attribute, or null if it cannot be read.</summary>
         DateTime? ModifiedDate { get; }
+
+        /// <summary>Know-how protected blocks can't be generated as source; false if unknown.</summary>
+        bool IsKnowHowProtected { get; }
     }
 
     /// <summary>A PLC data type (UDT).</summary>

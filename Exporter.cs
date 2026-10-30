@@ -508,6 +508,11 @@ namespace TiaExportBlocks
                         _log.WriteLine(block.Name + " programming language " + language + " not supported");
                         continue;
                     }
+                    if (block.IsKnowHowProtected)
+                    {
+                        _log.WriteLine(block.Name + " is know-how protected: TIA cannot generate its source, skipped");
+                        continue;
+                    }
                     result.Add(new Pending<IPlcBlock>
                     {
                         Item = block,
@@ -554,22 +559,59 @@ namespace TiaExportBlocks
             return true;
         }
 
+        private enum BatchResult
+        {
+            /// <summary>All blocks of the batch were exported.</summary>
+            Done,
+
+            /// <summary>TIA refused the call, usually because of one block in it (know-how protected, not pure SCL/STL).</summary>
+            CallFailed,
+
+            /// <summary>TIA generated the batch but its output can't be used as is.</summary>
+            NotUsable,
+        }
+
         private void ExportSources<T>(List<Pending<T>> items, Action<IList<T>, FileInfo> generate)
         {
             if (items.Count == 0) return;
-            string extension = items[0].Extension;
             for (int start = 0; start < items.Count; start += _settings.BatchSize)
             {
-                var chunk = items.Skip(start).Take(_settings.BatchSize).ToList();
-                if (chunk.Count > 1 && !_batchDisabled.Contains(extension) && TryExportBatch(chunk, extension, generate))
+                ExportChunk(items.Skip(start).Take(_settings.BatchSize).ToList(), generate);
+            }
+        }
+
+        /// <summary>
+        /// Exports a chunk in one call. If TIA refuses the call, the chunk is split in halves and each half is tried
+        /// again, so one bad block costs about 2·log2(N) calls instead of N single-block calls, and the other blocks
+        /// still get batched. Unusable output (split or verification mismatch) falls back to one call per block.
+        /// </summary>
+        private void ExportChunk<T>(List<Pending<T>> chunk, Action<IList<T>, FileInfo> generate)
+        {
+            string extension = chunk[0].Extension;
+            if (chunk.Count > 1 && !_batchDisabled.Contains(extension))
+            {
+                BatchResult result = TryExportBatch(chunk, extension, generate);
+                if (result == BatchResult.Done) return;
+                if (result == BatchResult.CallFailed)
                 {
-                    continue;
-                }
-                foreach (var item in chunk)
-                {
-                    ExportSingle(item, generate);
+                    int half = chunk.Count / 2;
+                    ExportChunk(chunk.Take(half).ToList(), generate);
+                    ExportChunk(chunk.Skip(half).ToList(), generate);
+                    return;
                 }
             }
+            foreach (var item in chunk)
+            {
+                ExportSingle(item, generate);
+            }
+        }
+
+        /// <summary>First line of an exception message, for one-line log entries.</summary>
+        private static string FirstLine(Exception exc)
+        {
+            string message = (exc.Message ?? "").Trim();
+            int newline = message.IndexOfAny(new[] { '\r', '\n' });
+            return newline < 0 ? message : message.Substring(0, newline).Trim();
         }
 
         private void ExportSingle<T>(Pending<T> item, Action<IList<T>, FileInfo> generate)
@@ -588,7 +630,8 @@ namespace TiaExportBlocks
             }
             catch (Exception exc)
             {
-                _log.WriteLine(exc.ToString());
+                // TIA's message says why (know-how protected, not pure SCL/STL, inconsistent); its stack trace adds nothing.
+                _log.WriteLine("Could not generate [" + item.Name + "]: " + (exc.Message ?? "").Trim());
                 TryDelete(temp);
                 RecordFailure(item.TargetPath);
             }
@@ -600,15 +643,24 @@ namespace TiaExportBlocks
         /// blocks. The first batch per file type is checked against a single-block export of its first block; if
         /// the bytes differ, batching is switched off for that file type for the rest of the run.
         /// </summary>
-        private bool TryExportBatch<T>(List<Pending<T>> chunk, string extension, Action<IList<T>, FileInfo> generate)
+        private BatchResult TryExportBatch<T>(List<Pending<T>> chunk, string extension, Action<IList<T>, FileInfo> generate)
         {
             string batchFile = Path.Combine(_runTempDirectory, "batch_" + Guid.NewGuid().ToString("N") + extension);
             try
             {
                 _log.WriteLine("Generating " + chunk.Count + " " + extension + " sources in one call");
-                using (_benchmark.Measure(Benchmark.GenerateSource, chunk.Count))
+                try
                 {
-                    generate(chunk.Select(c => c.Item).ToList(), new FileInfo(batchFile));
+                    using (_benchmark.Measure(Benchmark.GenerateSource, chunk.Count))
+                    {
+                        generate(chunk.Select(c => c.Item).ToList(), new FileInfo(batchFile));
+                    }
+                }
+                catch (Exception exc)
+                {
+                    _log.WriteLine("Batch of " + chunk.Count + " " + extension + " sources failed (" + FirstLine(exc) + "): "
+                        + (chunk.Count > 1 ? "splitting it to find the block(s) TIA refuses" : ""));
+                    return BatchResult.CallFailed;
                 }
                 bool hasBom;
                 string text = FileOps.ReadUtf8(batchFile, out hasBom);
@@ -617,14 +669,14 @@ namespace TiaExportBlocks
                     || !chunk.All(c => parts.Any(p => p.Name == c.Name)))
                 {
                     _log.WriteLine("Batch output did not split into its " + chunk.Count + " blocks: exporting them one by one");
-                    return false;
+                    return BatchResult.NotUsable;
                 }
 
                 if (!_batchVerified.Contains(extension) && !VerifyBatchMatchesSingle(chunk[0], parts, hasBom, generate))
                 {
                     _batchDisabled.Add(extension);
                     _log.WriteLine("Batch output for " + extension + " differs from single-block output: batching switched off for " + extension + " in this run");
-                    return false;
+                    return BatchResult.NotUsable;
                 }
                 _batchVerified.Add(extension);
 
@@ -636,12 +688,12 @@ namespace TiaExportBlocks
                     FileOps.MoveReplacing(temp, item.TargetPath);
                     RecordSuccess(item.TargetPath, item.Stamp);
                 }
-                return true;
+                return BatchResult.Done;
             }
             catch (Exception exc)
             {
-                _log.WriteLine("Batch export failed (" + exc.Message + "): exporting its blocks one by one");
-                return false;
+                _log.WriteLine("Batch export failed (" + FirstLine(exc) + "): exporting its blocks one by one");
+                return BatchResult.NotUsable;
             }
             finally
             {

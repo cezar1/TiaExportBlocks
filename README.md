@@ -33,7 +33,7 @@ Without options: full export. The export location is emptied and everything is e
 
 ## --batch N
 
-Generates N blocks (or UDTs) per `GenerateSource` call and splits the result back into one file per block, which is much faster (≈330 s → ≈50 s for 500 blocks with `--batch 50`). The split keeps the generated text byte for byte. The first batch of each file type is checked against a single-block export of its first block; if the bytes differ (e.g. another TIA version formats multi-block output differently) batching is switched off for that file type for the rest of the run. A batch that fails (e.g. a know-how protected block) or does not split cleanly into exactly its blocks is exported block by block. N is 1 to 1000.
+Generates N blocks (or UDTs) per `GenerateSource` call and splits the result back into one file per block, which is much faster (≈330 s → ≈50 s for 500 blocks with `--batch 50`). The split keeps the generated text byte for byte. The first batch of each file type is checked against a single-block export of its first block; if the bytes differ (e.g. another TIA version formats multi-block output differently) batching is switched off for that file type for the rest of the run. If TIA refuses a batch call, usually because one block in it is not pure SCL/STL, the batch is split in halves and retried, narrowing down to the refused block in about 2·log2(N) calls; all other blocks are still batched, and only that block is reported (`Could not generate [name]: ...`). Batching is not switched off by such errors. A batch whose output does not split cleanly into exactly its blocks is exported block by block. Know-how protected blocks are skipped before asking TIA. N is 1 to 1000.
 
 ## --incremental
 
