@@ -85,24 +85,20 @@ namespace TiaExportBlocks
         public static string BlockFile(string exportLocation, string rootPrefix, string folderPrefix,
             string currentPath, string blockName, string extension)
         {
-            return exportLocation + @"\" + rootPrefix + @"\"
+            return exportLocation + @"\" + MakeValidFileName(rootPrefix) + @"\"
                 + Path.Combine(folderPrefix, SanitizeRelativePath(currentPath), MakeValidFileName(blockName) + extension);
         }
 
-        /// <summary>
-        /// File TIA generates the block source into before it is moved to <see cref="BlockFile"/>.
-        /// Note: no separator is inserted, so without a trailing '\' on exportLocation the file lands
-        /// next to the export folder (C:\Test + Main.scl = C:\TestMain.scl).
-        /// </summary>
+        /// <summary>File TIA generates the block source into (inside the export folder) before it is moved to <see cref="BlockFile"/>.</summary>
         public static string BlockTempFile(string exportLocation, string blockName, string extension)
         {
-            return exportLocation + MakeValidFileName(blockName) + extension;
+            return Path.Combine(exportLocation, MakeValidFileName(blockName) + extension);
         }
 
         /// <summary>Location of an exported user data type, e.g. &lt;export&gt;\PLC_1\udt\Motor.udt</summary>
         public static string TypeFile(string exportLocation, string rootPrefix, string typeName)
         {
-            return exportLocation + @"\" + rootPrefix + @"\udt\" + typeName + ".udt";
+            return exportLocation + @"\" + MakeValidFileName(rootPrefix) + @"\udt\" + MakeValidFileName(typeName) + ".udt";
         }
 
         /// <summary>File a PLC tag table is exported into before it is moved to <see cref="PlcTagTableFile"/>.</summary>
@@ -114,19 +110,19 @@ namespace TiaExportBlocks
         /// <summary>Location of an exported PLC tag table, e.g. &lt;export&gt;\PLC_1\tag_tables\xml\Default tag table.xml</summary>
         public static string PlcTagTableFile(string exportLocation, string rootPrefix, string tableName)
         {
-            return exportLocation + @"\" + rootPrefix + @"\tag_tables\xml\" + @"\" + tableName + ".xml";
+            return exportLocation + @"\" + MakeValidFileName(rootPrefix) + @"\tag_tables\xml\" + MakeValidFileName(tableName) + ".xml";
         }
 
-        /// <summary>Location of an exported HMI tag table, e.g. &lt;export&gt;\hmi_tag_tables\xml\Tags.xml</summary>
-        public static string HmiTagTableFile(string exportLocation, string tableName)
+        /// <summary>Location of an exported HMI tag table, e.g. &lt;export&gt;\HMI_1\hmi_tag_tables\xml\Tags.xml</summary>
+        public static string HmiTagTableFile(string exportLocation, string hmiPrefix, string tableName)
         {
-            return exportLocation + @"\hmi_tag_tables\xml\" + tableName + ".xml";
+            return exportLocation + @"\" + MakeValidFileName(hmiPrefix) + @"\hmi_tag_tables\xml\" + MakeValidFileName(tableName) + ".xml";
         }
 
-        /// <summary>Location of an exported HMI text list, e.g. &lt;export&gt;\hmi_text_lists\xml\Alarms.xml</summary>
-        public static string HmiTextListFile(string exportLocation, string textListName)
+        /// <summary>Location of an exported HMI text list, e.g. &lt;export&gt;\HMI_1\hmi_text_lists\xml\Alarms.xml</summary>
+        public static string HmiTextListFile(string exportLocation, string hmiPrefix, string textListName)
         {
-            return exportLocation + @"\hmi_text_lists\xml\" + textListName + ".xml";
+            return exportLocation + @"\" + MakeValidFileName(hmiPrefix) + @"\hmi_text_lists\xml\" + MakeValidFileName(textListName) + ".xml";
         }
     }
 

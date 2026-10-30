@@ -25,8 +25,28 @@ GitHub Actions (`.github/workflows/build.yml`) builds the exe on a Windows runne
 
 Because `Siemens.Engineering.dll` is not in this repo, the workflow downloads it from the private repo `cezar1/siemens_tia_engineering_dlls` using a fine-grained token stored in the secret `TIA_DLLS_TOKEN` (read-only "Contents" access to that repo). The DLL for each TIA version goes in its own folder there (`v15_1/Siemens.Engineering.dll`, `v16/...`) and run the workflow manually with that version. The DLL is used only for compiling and is not included in the published zip.
 
-# Unit tests
+# Export layout
 
-`tests/TiaExportBlocks.Tests` (xUnit, .NET Framework 4.8) covers everything that does not need TIA Portal: export folder layout and file names, file name sanitizing, which block languages are exported, PLC/HMI device classification, argument handling and the file replace steps around each export. That logic lives in `ExportLogic.cs`; `Program.cs` keeps only the calls into the Siemens Openness API, which can only be exercised against a running TIA Portal.
+```
+<export>\<PLC device item>\scl|db|stl\<block group path>\<block>.scl|.db|.awl
+<export>\<PLC device item>\udt\<type>.udt
+<export>\<PLC device item>\tag_tables\xml\<tag table>.xml
+<export>\<HMI device item>\hmi_tag_tables\xml\<tag table>.xml
+<export>\<HMI device item>\hmi_text_lists\xml\<text list>.xml
+```
+
+Names are made file-system safe (invalid characters become `_`). Only S7-1500 stations are exported as PLCs; other devices are scanned for HMI targets.
+
+# Code layout and tests
+
+| File | Role |
+|---|---|
+| `Program.cs` | Entry point: argument check, timing, wiring |
+| `Exporter.cs` | The export run: walks instances → projects → devices → blocks/types/tag tables/HMI items |
+| `ExportLogic.cs` | Rules, output paths, file name sanitizing, file replace steps |
+| `TiaModel.cs` | Interfaces for the slice of the Openness object model the exporter uses |
+| `SiemensAdapters.cs` | Thin wrappers exposing the real `Siemens.Engineering` objects through those interfaces |
+
+`tests/TiaExportBlocks.Tests` (xUnit, .NET Framework 4.8) compiles everything except `Program.cs` and `SiemensAdapters.cs`, so it needs neither the Siemens DLL nor TIA Portal. `Fakes/FakeTia.cs` simulates TIA Portal: it builds fake projects (stations, PLC software, block groups, UDTs, tag tables, HMI targets), writes realistic source/XML files on `GenerateSource`/`Export`, refuses to overwrite existing files or write into missing folders, can inject failures (know-how protected blocks, aborted generation, disposed objects, failing exports) and records every Openness call in order so tests can assert on it.
 
 Run locally with `dotnet test tests/TiaExportBlocks.Tests` (or Test Explorer in Visual Studio). CI runs them on every push and PR before the exe is built.

@@ -64,7 +64,7 @@ namespace TiaExportBlocks.Tests
         [Fact]
         public void EnsureDirectoryExists_HandlesDoubledSeparators()
         {
-            // PlcTagTableFile produces "...\xml\\name.xml"
+            // Doubled separators can come from user-supplied export locations with a trailing '\'
             string file = _root + @"\PLC_1\tag_tables\xml\" + @"\" + "Tags.xml";
 
             FileOps.EnsureDirectoryExists(file);
@@ -245,7 +245,7 @@ namespace TiaExportBlocks.Tests
             ExportRules.TryGetBlockFormat("SCL", out extension, out folder);
 
             var target = new FileInfo(ExportPaths.BlockFile(export, "PLC_1", folder, @"Program blocks\Conveyors", "FB_Belt", extension));
-            var temp = new FileInfo(ExportPaths.BlockTempFile(export + @"\", "FB_Belt", extension));
+            var temp = new FileInfo(ExportPaths.BlockTempFile(export, "FB_Belt", extension));
             Directory.CreateDirectory(target.Directory.FullName);
             FileOps.DeleteIfExists(target.FullName);
             File.WriteAllText(temp.FullName, "FUNCTION_BLOCK FB_Belt"); // stands in for GenerateSource
