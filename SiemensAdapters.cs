@@ -67,6 +67,7 @@ namespace TiaExportBlocks
         public ProjectAdapter(Project project) { _project = project; }
 
         public string Name { get { return _project.Name; } }
+        public string Path { get { return _project.Path == null ? null : _project.Path.FullName; } }
         public IEnumerable<ITiaDevice> Devices
         {
             get { return _project.Devices.Select(d => (ITiaDevice)new DeviceAdapter(d)); }
@@ -127,6 +128,35 @@ namespace TiaExportBlocks
             get { return _software.TypeGroup.Types.Select(t => (IPlcType)new PlcTypeAdapter(t, _software)); }
         }
         public IPlcTagTableGroup TagTableGroup { get { return new PlcTagTableSystemGroupAdapter(_software.TagTableGroup); } }
+
+        public void GenerateSource(IList<IPlcBlock> blocks, FileInfo target)
+        {
+            List<PlcBlock> list = blocks.Select(b => ((PlcBlockAdapter)b).Block).ToList();
+            _software.ExternalSourceGroup.GenerateSource(list, target, GenerateOptions.None);
+        }
+
+        public void GenerateSource(IList<IPlcType> types, FileInfo target)
+        {
+            List<PlcType> list = types.Select(t => ((PlcTypeAdapter)t).Type).ToList();
+            _software.ExternalSourceGroup.GenerateSource(list, target, GenerateOptions.None);
+        }
+    }
+
+    internal static class SiemensAttributes
+    {
+        /// <summary>The "ModifiedDate" attribute, or null when it cannot be read (the element is then always exported).</summary>
+        public static DateTime? ModifiedDate(IEngineeringObject engineeringObject)
+        {
+            try
+            {
+                object value = engineeringObject.GetAttribute("ModifiedDate");
+                if (value is DateTime) return (DateTime)value;
+            }
+            catch (Exception)
+            {
+            }
+            return null;
+        }
     }
 
     internal sealed class PlcBlockGroupAdapter : IPlcBlockGroup
@@ -149,32 +179,22 @@ namespace TiaExportBlocks
     internal sealed class PlcBlockAdapter : IPlcBlock
     {
         private readonly PlcBlock _block;
-        private readonly PlcSoftware _software;
-        public PlcBlockAdapter(PlcBlock block, PlcSoftware software) { _block = block; _software = software; }
+        public PlcBlockAdapter(PlcBlock block, PlcSoftware software) { _block = block; }
 
+        public PlcBlock Block { get { return _block; } }
         public string Name { get { return _block.Name; } }
         public string ProgrammingLanguage { get { return _block.ProgrammingLanguage.ToString(); } }
-
-        public void GenerateSource(FileInfo target)
-        {
-            PlcExternalSourceSystemGroup externalSourceGroup = _software.ExternalSourceGroup;
-            externalSourceGroup.GenerateSource(new List<PlcBlock> { _block }, target, GenerateOptions.None);
-        }
+        public DateTime? ModifiedDate { get { return SiemensAttributes.ModifiedDate(_block); } }
     }
 
     internal sealed class PlcTypeAdapter : IPlcType
     {
         private readonly PlcType _type;
-        private readonly PlcSoftware _software;
-        public PlcTypeAdapter(PlcType type, PlcSoftware software) { _type = type; _software = software; }
+        public PlcTypeAdapter(PlcType type, PlcSoftware software) { _type = type; }
 
+        public PlcType Type { get { return _type; } }
         public string Name { get { return _type.Name; } }
-
-        public void GenerateSource(FileInfo target)
-        {
-            PlcExternalSourceSystemGroup externalSourceGroup = _software.ExternalSourceGroup;
-            externalSourceGroup.GenerateSource(new List<PlcType> { _type }, target, GenerateOptions.None);
-        }
+        public DateTime? ModifiedDate { get { return SiemensAttributes.ModifiedDate(_type); } }
     }
 
     internal sealed class PlcTagTableSystemGroupAdapter : IPlcTagTableGroup

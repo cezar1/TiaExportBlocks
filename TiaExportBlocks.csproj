@@ -79,6 +79,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Exporter.cs" />
+    <Compile Include="ExportState.cs" />
     <Compile Include="ExportLogic.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="SiemensAdapters.cs" />
