@@ -225,10 +225,10 @@ namespace TiaExportBlocks.Tests
         }
 
         [Fact]
-        public void BlockTempFile_WithoutTrailingSeparator_IsGluedToFolderName()
+        public void BlockTempFile_WithoutTrailingSeparator_IsStillInsideExportLocation()
         {
-            // Current behaviour, kept as-is in this refactor: no separator is inserted.
-            Assert.Equal(@"C:\ExportMain.scl", Full(ExportPaths.BlockTempFile(@"C:\Export", "Main", ".scl")));
+            // Used to be "C:\ExportMain.scl" (next to the export folder) before the separator fix.
+            Assert.Equal(@"C:\Export\Main.scl", Full(ExportPaths.BlockTempFile(@"C:\Export", "Main", ".scl")));
         }
 
         [Fact]
@@ -243,6 +243,12 @@ namespace TiaExportBlocks.Tests
         public void TypeFile_IsInUdtFolderOfPlc()
         {
             Assert.Equal(@"C:\Export\PLC_1\udt\UDT_Motor.udt", Full(ExportPaths.TypeFile(Export, "PLC_1", "UDT_Motor")));
+        }
+
+        [Fact]
+        public void TypeFile_SanitizesTypeName()
+        {
+            Assert.Equal(@"C:\Export\PLC_1\udt\UDT_Motor_v2.udt", Full(ExportPaths.TypeFile(Export, "PLC_1", "UDT_Motor/v2")));
         }
 
         [Fact]
@@ -274,6 +280,25 @@ namespace TiaExportBlocks.Tests
         }
 
         [Fact]
+        public void PlcTagTableFile_SanitizesTableName()
+        {
+            Assert.Equal(@"C:\Export\PLC_1\tag_tables\xml\IO_Inputs.xml",
+                Full(ExportPaths.PlcTagTableFile(Export, "PLC_1", "IO:Inputs")));
+        }
+
+        [Theory]
+        [InlineData("PLC/1", "PLC_1")]
+        [InlineData("PLC:Line 3", "PLC_Line 3")]
+        public void PlcPaths_SanitizeDeviceItemName(string rootPrefix, string expectedFolder)
+        {
+            string expectedRoot = @"C:\Export\" + expectedFolder + @"\";
+
+            Assert.StartsWith(expectedRoot, Full(ExportPaths.BlockFile(Export, rootPrefix, @"\scl\", "Program blocks", "Main", ".scl")));
+            Assert.StartsWith(expectedRoot, Full(ExportPaths.TypeFile(Export, rootPrefix, "UDT")));
+            Assert.StartsWith(expectedRoot, Full(ExportPaths.PlcTagTableFile(Export, rootPrefix, "Tags")));
+        }
+
+        [Fact]
         public void PlcTagTableFile_DiffersFromTempFile()
         {
             Assert.NotEqual(Full(ExportPaths.PlcTagTableTempFile(Export, "Tags")),
@@ -283,23 +308,39 @@ namespace TiaExportBlocks.Tests
         // ---- HMI ----
 
         [Fact]
-        public void HmiTagTableFile_IsInHmiTagTablesFolder()
+        public void HmiTagTableFile_IsInHmiTagTablesFolderOfDevice()
         {
-            Assert.Equal(@"C:\Export\hmi_tag_tables\xml\Default tag table.xml",
-                Full(ExportPaths.HmiTagTableFile(Export, "Default tag table")));
+            Assert.Equal(@"C:\Export\HMI_RT_1\hmi_tag_tables\xml\Default tag table.xml",
+                Full(ExportPaths.HmiTagTableFile(Export, "HMI_RT_1", "Default tag table")));
         }
 
         [Fact]
-        public void HmiTextListFile_IsInHmiTextListsFolder()
+        public void HmiTextListFile_IsInHmiTextListsFolderOfDevice()
         {
-            Assert.Equal(@"C:\Export\hmi_text_lists\xml\Alarm_Texts.xml",
-                Full(ExportPaths.HmiTextListFile(Export, "Alarm_Texts")));
+            Assert.Equal(@"C:\Export\HMI_RT_1\hmi_text_lists\xml\Alarm_Texts.xml",
+                Full(ExportPaths.HmiTextListFile(Export, "HMI_RT_1", "Alarm_Texts")));
+        }
+
+        [Fact]
+        public void HmiPaths_SanitizeDeviceAndItemNames()
+        {
+            Assert.Equal(@"C:\Export\HMI_1\hmi_tag_tables\xml\Motors_Pumps.xml",
+                Full(ExportPaths.HmiTagTableFile(Export, "HMI:1", "Motors/Pumps")));
+            Assert.Equal(@"C:\Export\HMI_1\hmi_text_lists\xml\Status_.xml",
+                Full(ExportPaths.HmiTextListFile(Export, "HMI:1", "Status?")));
         }
 
         [Fact]
         public void HmiTagTableAndTextList_WithSameName_DoNotCollide()
         {
-            Assert.NotEqual(Full(ExportPaths.HmiTagTableFile(Export, "X")), Full(ExportPaths.HmiTextListFile(Export, "X")));
+            Assert.NotEqual(Full(ExportPaths.HmiTagTableFile(Export, "HMI_1", "X")), Full(ExportPaths.HmiTextListFile(Export, "HMI_1", "X")));
+        }
+
+        [Fact]
+        public void HmiPaths_TwoHmisWithSameTableName_DoNotCollide()
+        {
+            Assert.NotEqual(Full(ExportPaths.HmiTagTableFile(Export, "HMI_1", "Tags")), Full(ExportPaths.HmiTagTableFile(Export, "HMI_2", "Tags")));
+            Assert.NotEqual(Full(ExportPaths.HmiTextListFile(Export, "HMI_1", "Texts")), Full(ExportPaths.HmiTextListFile(Export, "HMI_2", "Texts")));
         }
 
         // ---- Layout as a whole ----
@@ -313,8 +354,9 @@ namespace TiaExportBlocks.Tests
                 ExportPaths.TypeFile(Export, "PLC_1", "UDT_Motor"),
                 ExportPaths.PlcTagTableTempFile(Export, "Tags"),
                 ExportPaths.PlcTagTableFile(Export, "PLC_1", "Tags"),
-                ExportPaths.HmiTagTableFile(Export, "Tags"),
-                ExportPaths.HmiTextListFile(Export, "Texts"),
+                ExportPaths.BlockTempFile(Export, "Main", ".scl"),
+                ExportPaths.HmiTagTableFile(Export, "HMI_1", "Tags"),
+                ExportPaths.HmiTextListFile(Export, "HMI_1", "Texts"),
             };
 
             Assert.All(paths.Select(Full), p => Assert.StartsWith(@"C:\Export\", p));

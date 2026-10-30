@@ -7,10 +7,12 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
-  <!-- The logic under test is compiled straight from the main project, so the tests
-       need neither Siemens.Engineering.dll nor a TIA Portal installation. -->
+  <!-- Everything except Program.cs and SiemensAdapters.cs is compiled straight from the main project,
+       so the tests need neither Siemens.Engineering.dll nor a TIA Portal installation. -->
   <ItemGroup>
-    <Compile Include="..\..\ExportLogic.cs" Link="ExportLogic.cs" />
+    <Compile Include="..\..\ExportLogic.cs" Link="Production\ExportLogic.cs" />
+    <Compile Include="..\..\TiaModel.cs" Link="Production\TiaModel.cs" />
+    <Compile Include="..\..\Exporter.cs" Link="Production\Exporter.cs" />
   </ItemGroup>
 
   <ItemGroup>

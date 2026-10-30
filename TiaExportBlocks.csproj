@@ -78,8 +78,11 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Exporter.cs" />
     <Compile Include="ExportLogic.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="SiemensAdapters.cs" />
+    <Compile Include="TiaModel.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
