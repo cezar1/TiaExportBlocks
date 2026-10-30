@@ -25,6 +25,12 @@ GitHub Actions (`.github/workflows/build.yml`) builds the exe on a Windows runne
 
 Because `Siemens.Engineering.dll` is not in this repo, the workflow downloads it from the private repo `cezar1/siemens_tia_engineering_dlls` using a fine-grained token stored in the secret `TIA_DLLS_TOKEN` (read-only "Contents" access to that repo). The DLL for each TIA version goes in its own folder there (`v15_1/Siemens.Engineering.dll`, `v16/...`) and run the workflow manually with that version. The DLL is used only for compiling and is not included in the published zip.
 
+# Clean export guarantee
+
+Every run starts by deleting **everything** inside the export location (the folder itself is kept): read-only, hidden and system files included, files locked by another program retried for about a second. Links (junctions/symlinks) inside it are removed without touching what they point to. If anything still cannot be deleted, the tool stops with exit code 1 and lists the files, without exporting anything. After the export, anything in the export location that the run did not write itself is removed too. The export location therefore always holds exactly the current project state. Drive and share roots (`C:\`, `\\server\share`) are refused as export location.
+
+Exit codes: 0 done, 1 export location could not be emptied, 2 invalid arguments.
+
 # Export layout
 
 ```

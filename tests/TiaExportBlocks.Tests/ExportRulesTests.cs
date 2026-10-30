@@ -139,6 +139,50 @@ namespace TiaExportBlocks.Tests
             Assert.False(ExportRules.IsPlcDeviceItem(name));
         }
 
+        // ---- Export location safety ----
+
+        [Theory]
+        [InlineData(@"C:\")]
+        [InlineData(@"D:\")]
+        [InlineData(@"\\server\share")]
+        [InlineData(@"\\server\share\")]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        [InlineData(@"C:\a|b")]
+        public void TryNormalizeExportLocation_RootsEmptyOrInvalid_AreRefused(string path)
+        {
+            string normalized, error;
+
+            Assert.False(ExportRules.TryNormalizeExportLocation(path, out normalized, out error));
+            Assert.Null(normalized);
+            Assert.False(string.IsNullOrEmpty(error));
+        }
+
+        [Theory]
+        [InlineData(@"C:\Export", @"C:\Export")]
+        [InlineData(@"C:\Export\", @"C:\Export")]
+        [InlineData(@"C:\Export\\", @"C:\Export")]
+        [InlineData(@"C:\Projects\Line 3\export", @"C:\Projects\Line 3\export")]
+        [InlineData(@"\\server\share\export", @"\\server\share\export")]
+        public void TryNormalizeExportLocation_Folders_AreAcceptedWithoutTrailingSeparator(string path, string expected)
+        {
+            string normalized, error;
+
+            Assert.True(ExportRules.TryNormalizeExportLocation(path, out normalized, out error));
+            Assert.Equal(expected, normalized);
+            Assert.Null(error);
+        }
+
+        [Fact]
+        public void TryNormalizeExportLocation_RelativePath_IsMadeAbsolute()
+        {
+            string normalized, error;
+
+            Assert.True(ExportRules.TryNormalizeExportLocation("out", out normalized, out error));
+            Assert.Equal(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "out"), normalized);
+        }
+
         // ---- Command line ----
 
         [Fact]
